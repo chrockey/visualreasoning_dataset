@@ -9,7 +9,7 @@ from .base import BaseDataset
 
 
 class EgoDexDataset(BaseDataset):
-    def __init__(self, data_dir: str = "vla-dataset-samples/egodex"):
+    def __init__(self, data_dir: str = "sample/vla-dataset-samples/egodex"):
         super().__init__(data_dir)
 
     def get_video_names(self) -> List[str]:
