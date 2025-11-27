@@ -8,6 +8,20 @@ Pipeline system for visual reasoning dataset annotation using Molmo and SAM2.
 ./install.sh
 ```
 
+## Supported Datasets
+
+| Dataset | Status | Additional Metadata |
+|---------|--------|---------------------|
+| **EgoDex** | ✅ | Camera intrinsics, joint transforms (70+ joints), confidence scores, MANO hand poses |
+| **AgiBotWorld** | ⬜️ | TBD |
+| **HoloAssist** | ⬜️ | TBD |
+| **Open-X-Embodiment** | ⬜️ | TBD |
+
+All datasets provide:
+- `frames`: Video frames as (N, H, W, 3) numpy array
+- `description`: Task description string
+- `metadata`: Dataset-specific annotations and additional data
+
 ## Project Structure
 
 ```

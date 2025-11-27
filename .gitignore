@@ -22,3 +22,6 @@ viewer/
 # visualization files
 renderings/
 renderings_bak/
+
+# sample data
+vla-dataset-samples

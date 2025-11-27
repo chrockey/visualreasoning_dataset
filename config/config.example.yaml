@@ -2,6 +2,10 @@
 # This file is referenced by experiment.config_file
 # Pipeline-specific settings are in config/{pipeline_name}.yaml
 
+dataset:
+  name: egodex  # one of: egodex, agibotworld, holoassist, open_x_embodiment
+  dir: vla-dataset-samples/egodex
+
 worker:
   save_dir: /path/to/results
   stop_when_empty: true  # Stop when no pending/running jobs remain
