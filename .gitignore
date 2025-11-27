@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.ipynb_checkpoints/
+.cache/
+sample/
+results/
+html/
+
+# Virtual environments
+.venv
+
+# temporary files
+tmp/
+viewer/
+
+# visualization files
+renderings/
+renderings_bak/
