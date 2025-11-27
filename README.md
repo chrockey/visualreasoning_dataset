@@ -14,8 +14,8 @@ Pipeline system for visual reasoning dataset annotation using Molmo and SAM2.
 |---------|--------|---------------------|
 | **EgoDex** | ✅ | Camera parameters (intrinsics/extrinsics), joint transforms (70+ joints), confidence scores, MANO hand poses |
 | **Open X-Embodiment** | ✅ | Robot states (joint angles), actions, 512-dim language embeddings |
-| **HoloAssist** | ✅ | Hand poses (left/right), depth |
 | **AgiBotWorld** | ✅ | Camera parameters (intrinsics/extrinsics), additional views, actions, proprio_stats |
+| **HoloAssist** | ✅ | Hand poses (left/right), depth |
 
 All datasets inherit from `BaseDataset` and provide:
 - `video_name`: Video identifier string (for tracking annotations)
@@ -28,6 +28,7 @@ All datasets inherit from `BaseDataset` and provide:
 ```python
 from src.datasets.egodex import EgoDexDataset
 from src.datasets.oxe import OXEDataset
+from src.datasets.agiborworld import AgiBotWorldDataset
 from src.datasets.holoassist import HoloAssistDataset
 
 # EgoDex: Egocentric hand manipulation videos
@@ -49,6 +50,29 @@ data = dataset[0]
 # data['metadata']['action']: robot actions
 # data['metadata']['language_embedding']: 512-dim embedding
 # data['metadata']['tfrecord_info']: shard tracking info for annotations
+
+# AgiBotWorld-Beta: Bimanual manipulation dataset
+dataset = AgiBotWorldDataset()
+print(f"Episodes: {len(dataset)}")
+data = dataset[0]
+# [f.shape for f in data['frames']]
+# [(151, 480, 640, 3),
+#  (239, 480, 640, 3),
+#  (165, 480, 640, 3),
+#  (197, 480, 640, 3),
+#  (168, 480, 640, 3),
+#  (276, 480, 640, 3)]
+#  data['description']
+# ['Retrieve cucumber from the shelf.',
+#  'Place the held cucumber into the plastic bag in the shopping cart.',
+#  'Retrieve tomato from the shelf.',
+#  'Place the held tomato into the plastic bag in the shopping cart.',
+#  'Retrieve corn from the shelf.',
+#  "Place the held corn into the shopping cart's plastic bag."]
+# data['metadata']['hand_left_frames]: frames from hand-left cam
+# data['metadata']['hand_right_frames]: frames from hand-right cam
+# data['metadata']['action_config']: action text, skill(pick,place,..)
+# data['metadata']['proprio_stats]: effector (orientation, velocity, ..)
 
 # HoloAssist: Egocentric human interaction dataset
 dataset = HoloAssistDataset()
@@ -78,29 +102,6 @@ data = dataset[0]
 # data['metadata']['hands_left']: Hand pose (left)
 # data['metadata']['hands_right']: Hand pose (right)
 # data['metadata']['pose_sync']: Camera pose
-
-# AgiBotWorld-Beta: Bimanual manipulation dataset
-dataset = AgiBotWorldBetaDataset()
-print(f"Episodes: {len(dataset)}")
-data = dataset[0]
-# [f.shape for f in data['frames']]
-# [(151, 480, 640, 3),
-#  (239, 480, 640, 3),
-#  (165, 480, 640, 3),
-#  (197, 480, 640, 3),
-#  (168, 480, 640, 3),
-#  (276, 480, 640, 3)]
-#  data['description']
-# ['Retrieve cucumber from the shelf.',
-#  'Place the held cucumber into the plastic bag in the shopping cart.',
-#  'Retrieve tomato from the shelf.',
-#  'Place the held tomato into the plastic bag in the shopping cart.',
-#  'Retrieve corn from the shelf.',
-#  "Place the held corn into the shopping cart's plastic bag."]
-# data['metadata']['hand_left_frames]: frames from hand-left cam
-# data['metadata']['hand_right_frames]: frames from hand-right cam
-# data['metadata']['action_config']: action text, skill(pick,place,..)
-# data['metadata']['proprio_stats]: effector (orientation, velocity, ..)
 
 ```
 
