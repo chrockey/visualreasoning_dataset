@@ -12,7 +12,7 @@ Pipeline system for visual reasoning dataset annotation using Molmo and SAM2.
 
 | Dataset | Status | Additional Metadata |
 |---------|--------|---------------------|
-| **EgoDex** | ✅ | Camera intrinsics, joint transforms (70+ joints), confidence scores, MANO hand poses |
+| **EgoDex** | ✅ | Camera parameters (intrinsics/extrinsics), joint transforms (70+ joints), confidence scores, MANO hand poses |
 | **AgiBotWorld** | ⬜️ | TBD |
 | **HoloAssist** | ⬜️ | TBD |
 | **Open-X-Embodiment** | ⬜️ | TBD |
