@@ -45,21 +45,27 @@ class BaseWorker(ABC):
     def __init__(
         self,
         server_url: str,
+        experiment_id: str,
         worker_id: Optional[str] = None,
         poll_interval: float = 5.0,
         max_retries: int = 3,
+        stop_when_empty: bool = False,
     ):
         """
         Args:
             server_url: URL of the job server (e.g., "http://localhost:8000")
+            experiment_id: ID of the experiment to fetch jobs from.
             worker_id: Unique worker identifier. If None, uses hostname + timestamp.
             poll_interval: Seconds to wait between polling when no jobs available.
             max_retries: Number of retries for network errors.
+            stop_when_empty: If True, stop when no pending/running jobs remain in queue.
         """
         self.server_url = server_url.rstrip("/")
+        self.experiment_id = experiment_id
         self.worker_id = worker_id or f"{socket.gethostname()}-{int(time.time())}"
         self.poll_interval = poll_interval
         self.max_retries = max_retries
+        self.stop_when_empty = stop_when_empty
         self._running = False
 
     @abstractmethod
@@ -115,6 +121,10 @@ class BaseWorker(ABC):
                 job = self._fetch_job()
 
                 if job is None:
+                    # Check if we should stop when queue is empty
+                    if self.stop_when_empty and self._is_queue_empty():
+                        logger.info("Queue is empty. Stopping worker.")
+                        break
                     logger.debug(f"No jobs available. Waiting {self.poll_interval}s...")
                     time.sleep(self.poll_interval)
                     continue
@@ -149,12 +159,26 @@ class BaseWorker(ABC):
         """Signal the worker to stop after current job."""
         self._running = False
 
+    def _is_queue_empty(self) -> bool:
+        """Check if the experiment's job queue has no pending or running jobs."""
+        try:
+            response = requests.get(
+                f"{self.server_url}/experiments/{self.experiment_id}/stats",
+                timeout=10,
+            )
+            if response.status_code == 200:
+                stats = response.json()
+                return stats.get("pending", 0) == 0 and stats.get("running", 0) == 0
+        except requests.exceptions.RequestException:
+            pass
+        return False
+
     def _fetch_job(self) -> Optional[dict]:
-        """Fetch a job from the server."""
+        """Fetch a job from the experiment."""
         for attempt in range(self.max_retries):
             try:
                 response = requests.get(
-                    f"{self.server_url}/jobs/fetch",
+                    f"{self.server_url}/experiments/{self.experiment_id}/jobs/fetch",
                     params={"worker_id": self.worker_id},
                     timeout=30,
                 )
@@ -221,12 +245,16 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Run example worker")
     parser.add_argument("--server", default="http://localhost:8000", help="Server URL")
+    parser.add_argument("--experiment", required=True, help="Experiment ID")
     parser.add_argument("--worker-id", help="Worker ID")
     parser.add_argument("--max-jobs", type=int, help="Max jobs to process")
+    parser.add_argument("--stop-when-empty", action="store_true", help="Stop when queue is empty")
     args = parser.parse_args()
 
     worker = ExampleWorker(
         server_url=args.server,
+        experiment_id=args.experiment,
         worker_id=args.worker_id,
+        stop_when_empty=args.stop_when_empty,
     )
     worker.run(max_jobs=args.max_jobs)

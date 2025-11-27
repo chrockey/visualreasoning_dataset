@@ -17,6 +17,7 @@ Distributed pipeline system for visual reasoning dataset annotation using Molmo 
 ```bash
 uvicorn src.job_server.server:app --host 0.0.0.0 --port 8000
 ```
+Admin panel available at http://localhost:8000/admin
 
 ### Run Pipeline Worker
 ```bash
@@ -34,10 +35,10 @@ python -m src.pipelines.visual_trace
 
 ### Client CLI
 ```bash
-python -m src.job_server.client create-experiment exp-001 --name "My Experiment"
-python -m src.job_server.client submit exp-001 job-001 '{"video_path": "/data/video.mp4"}'
-python -m src.job_server.client stats exp-001
-python -m src.job_server.client wait exp-001
+python -m src.job_server.client create --name "My Experiment"
+python -m src.job_server.client list
+python -m src.job_server.client get EXPERIMENT_ID
+python -m src.job_server.client delete EXPERIMENT_ID
 ```
 
 ## Architecture
@@ -55,9 +56,9 @@ All pipelines extend `BasePipeline` and implement:
 Register new pipelines in `PIPELINES` dict in `src/job_server/pipeline_worker.py`.
 
 ### Job Server (`src/job_server/`)
-FastAPI + SQLite job distribution system with experiments containing jobs.
+FastAPI + SQLAlchemy + SQLite job distribution system with experiments containing jobs. Includes SQLAdmin panel at `/admin`.
 
-- **server.py**: REST API with endpoints for experiments and jobs. Jobs have states: `pending` → `running` → `completed`/`failed`.
+- **server.py**: REST API with endpoints for experiments and jobs. Uses SQLAlchemy ORM. Jobs have states: `pending` → `running` → `completed`/`failed`.
 - **worker.py**: `BaseWorker` abstract class - subclass and implement `setup()` and `process_job(job_id, payload)`.
 - **pipeline_worker.py**: `PipelineWorker` loads a pipeline by name and runs it on jobs. Configured via YAML.
 - **client.py**: `JobClient` for submitting jobs and monitoring. Also has CLI interface.

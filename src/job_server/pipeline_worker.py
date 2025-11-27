@@ -9,10 +9,14 @@ Config file (YAML):
         url: http://localhost:8000
         poll_interval: 5.0
 
+    experiment:
+        id: exp-001  # Required: experiment to fetch jobs from
+
     worker:
         id: worker-1  # optional, auto-generated if not set
         max_jobs: null  # null = unlimited
         save_dir: /path/to/results
+        stop_when_empty: true  # Stop when no more jobs
 
     pipeline:
         name: affordance_type1
@@ -68,13 +72,14 @@ class PipelineWorker(BaseWorker):
     def __init__(
         self,
         server_url: str,
+        experiment_id: str,
         pipeline_name: str,
         save_dir: str,
         pipeline_config: Optional[Dict[str, Any]] = None,
         worker_id: str = None,
         **kwargs,
     ):
-        super().__init__(server_url, worker_id=worker_id, **kwargs)
+        super().__init__(server_url, experiment_id=experiment_id, worker_id=worker_id, **kwargs)
         self.pipeline_name = pipeline_name
         self.pipeline_config = pipeline_config or {}
         self.save_dir = Path(save_dir)
@@ -132,19 +137,27 @@ def main():
         config = yaml.safe_load(f)
 
     server_config = config.get("server", {})
+    experiment_config = config.get("experiment", {})
     worker_config = config.get("worker", {})
     pipeline_config = config.get("pipeline", {})
 
     # Extract pipeline name, rest goes to pipeline __init__
     pipeline_name = pipeline_config.pop("name")
 
+    # Experiment ID is required
+    experiment_id = experiment_config.get("id")
+    if not experiment_id:
+        raise ValueError("experiment.id is required in config")
+
     worker = PipelineWorker(
         server_url=server_config.get("url", "http://localhost:8000"),
+        experiment_id=experiment_id,
         pipeline_name=pipeline_name,
         save_dir=worker_config["save_dir"],
         pipeline_config=pipeline_config,
         worker_id=worker_config.get("id"),
         poll_interval=server_config.get("poll_interval", 5.0),
+        stop_when_empty=worker_config.get("stop_when_empty", False),
     )
     worker.run(max_jobs=worker_config.get("max_jobs"))
 

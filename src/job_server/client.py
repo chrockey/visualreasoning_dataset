@@ -1,28 +1,25 @@
 """
 Job Client - Submit jobs and monitor status
 
-Usage:
-    from job_server.client import JobClient
+Usage (Python):
+    from src.job_server.client import JobClient
 
     client = JobClient("http://localhost:8000")
+    exp = client.create_experiment(name="My Experiment")
+    print(f"Created: {client.experiment_id}")
 
-    # Submit single job
     client.submit("job-001", {"video_path": "/data/video1.mp4"})
-
-    # Submit batch
-    jobs = [("job-002", {"video_path": f"/data/video{i}.mp4"}) for i in range(100)]
-    client.submit_batch(jobs)
-
-    # Check status
-    stats = client.stats()
-    print(f"Pending: {stats['pending']}, Completed: {stats['completed']}")
+    print(client.stats())
 
 CLI:
-    python -m job_server.client submit --server http://localhost:8000 job-001 '{"key": "value"}'
-    python -m job_server.client stats --server http://localhost:8000
+    python -m src.job_server.client create --name "My Experiment"
+    python -m src.job_server.client list
+    python -m src.job_server.client get EXPERIMENT_ID
+    python -m src.job_server.client delete EXPERIMENT_ID
 """
 
 import json
+import time
 from typing import Optional
 
 import requests
@@ -31,200 +28,249 @@ import requests
 class JobClient:
     """Client for interacting with the job server."""
 
-    def __init__(self, server_url: str, timeout: float = 30.0):
+    def __init__(
+        self,
+        server_url: str = "http://localhost:8000",
+        experiment_id: Optional[str] = None,
+        timeout: float = 30.0,
+    ):
         self.server_url = server_url.rstrip("/")
+        self.experiment_id = experiment_id
         self.timeout = timeout
 
-    def submit(self, job_id: str, payload: dict) -> dict:
-        """Submit a single job."""
+    def _require_experiment(self):
+        if self.experiment_id is None:
+            raise ValueError(
+                "experiment_id is required. Set it in constructor or use set_experiment()"
+            )
+
+    # ============ Experiment Methods ============
+
+    def set_experiment(self, experiment_id: str):
+        """Set the current experiment ID."""
+        self.experiment_id = experiment_id
+
+    def create_experiment(
+        self,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        num_jobs: Optional[int] = None,
+    ) -> dict:
+        """Create a new experiment. Server auto-generates ID if not provided."""
         response = requests.post(
-            f"{self.server_url}/jobs",
+            f"{self.server_url}/experiments",
+            json={
+                "name": name,
+                "description": description,
+                "num_jobs": num_jobs,
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        result = response.json()
+        self.experiment_id = result["experiment_id"]
+        return result
+
+    def get_experiment(self, experiment_id: Optional[str] = None) -> dict:
+        """Get experiment details."""
+        exp_id = experiment_id or self.experiment_id
+        if not exp_id:
+            raise ValueError("experiment_id required")
+        response = requests.get(
+            f"{self.server_url}/experiments/{exp_id}", timeout=self.timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def list_experiments(self) -> list:
+        """List all experiments."""
+        response = requests.get(f"{self.server_url}/experiments", timeout=self.timeout)
+        response.raise_for_status()
+        return response.json()
+
+    def pause_experiment(self, experiment_id: Optional[str] = None) -> dict:
+        """Pause an experiment (no new jobs will be fetched)."""
+        exp_id = experiment_id or self.experiment_id
+        if not exp_id:
+            raise ValueError("experiment_id required")
+        response = requests.put(
+            f"{self.server_url}/experiments/{exp_id}/pause", timeout=self.timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def resume_experiment(self, experiment_id: Optional[str] = None) -> dict:
+        """Resume a paused experiment."""
+        exp_id = experiment_id or self.experiment_id
+        if not exp_id:
+            raise ValueError("experiment_id required")
+        response = requests.put(
+            f"{self.server_url}/experiments/{exp_id}/resume", timeout=self.timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def delete_experiment(self, experiment_id: Optional[str] = None) -> dict:
+        """Delete an experiment and all its jobs."""
+        exp_id = experiment_id or self.experiment_id
+        if not exp_id:
+            raise ValueError("experiment_id required")
+        response = requests.delete(
+            f"{self.server_url}/experiments/{exp_id}", timeout=self.timeout
+        )
+        response.raise_for_status()
+        return response.json()
+
+    # ============ Job Methods ============
+
+    def submit(self, experiment_id: str, job_id: str, payload: str | dict) -> dict:
+        """Submit a single job. Payload can be JSON string or dict."""
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        response = requests.post(
+            f"{self.server_url}/experiments/{experiment_id}/jobs",
             json={"job_id": job_id, "payload": payload},
             timeout=self.timeout,
         )
         response.raise_for_status()
         return response.json()
 
-    def submit_batch(self, jobs: list[tuple[str, dict]], chunk_size: int = 1000) -> dict:
-        """
-        Submit multiple jobs.
-
-        Args:
-            jobs: List of (job_id, payload) tuples
-            chunk_size: Number of jobs per request
-
-        Returns:
-            {"submitted": count, "job_ids": [...]}
-        """
+    def submit_batch(
+        self, jobs: list[tuple[str, dict]], chunk_size: int = 1000
+    ) -> dict:
+        """Submit multiple jobs to the current experiment."""
+        self._require_experiment()
         all_submitted = []
-
         for i in range(0, len(jobs), chunk_size):
             chunk = jobs[i : i + chunk_size]
             data = [{"job_id": jid, "payload": p} for jid, p in chunk]
-
             response = requests.post(
-                f"{self.server_url}/jobs/batch",
+                f"{self.server_url}/experiments/{self.experiment_id}/jobs/batch",
                 json=data,
                 timeout=self.timeout,
             )
             response.raise_for_status()
             result = response.json()
             all_submitted.extend(result.get("job_ids", []))
-
         return {"submitted": len(all_submitted), "job_ids": all_submitted}
 
-    def get(self, job_id: str) -> dict:
+    def get_job(self, job_id: str) -> dict:
         """Get job details."""
         response = requests.get(
-            f"{self.server_url}/jobs/{job_id}",
-            timeout=self.timeout,
+            f"{self.server_url}/jobs/{job_id}", timeout=self.timeout
         )
         response.raise_for_status()
         return response.json()
 
-    def stats(self) -> dict:
-        """Get queue statistics."""
+    def stats(self, experiment_id: Optional[str] = None) -> dict:
+        """Get statistics for an experiment."""
+        exp_id = experiment_id or self.experiment_id
+        if not exp_id:
+            raise ValueError("experiment_id required")
         response = requests.get(
-            f"{self.server_url}/stats",
-            timeout=self.timeout,
+            f"{self.server_url}/experiments/{exp_id}/stats", timeout=self.timeout
         )
+        response.raise_for_status()
+        return response.json()
+
+    def global_stats(self) -> dict:
+        """Get global statistics across all experiments."""
+        response = requests.get(f"{self.server_url}/stats", timeout=self.timeout)
         response.raise_for_status()
         return response.json()
 
     def retry(self, job_id: str) -> dict:
         """Retry a failed job."""
         response = requests.post(
-            f"{self.server_url}/jobs/{job_id}/retry",
-            timeout=self.timeout,
+            f"{self.server_url}/jobs/{job_id}/retry", timeout=self.timeout
         )
         response.raise_for_status()
         return response.json()
 
-    def retry_all_failed(self) -> dict:
-        """Retry all failed jobs."""
+    def retry_all_failed(self, experiment_id: Optional[str] = None) -> dict:
+        """Retry all failed jobs in an experiment."""
+        exp_id = experiment_id or self.experiment_id
+        if not exp_id:
+            raise ValueError("experiment_id required")
         response = requests.post(
-            f"{self.server_url}/jobs/retry-all-failed",
+            f"{self.server_url}/experiments/{exp_id}/jobs/retry-all-failed",
             timeout=self.timeout,
         )
         response.raise_for_status()
         return response.json()
 
-    def delete(self, job_id: str) -> dict:
+    def delete_job(self, job_id: str) -> dict:
         """Delete a job."""
         response = requests.delete(
-            f"{self.server_url}/jobs/{job_id}",
-            timeout=self.timeout,
+            f"{self.server_url}/jobs/{job_id}", timeout=self.timeout
         )
         response.raise_for_status()
         return response.json()
 
-    def wait_for_completion(
-        self,
-        poll_interval: float = 10.0,
-        callback: Optional[callable] = None,
-    ) -> dict:
-        """
-        Wait until all jobs are completed or failed.
+    def wait(self, experiment_id: Optional[str] = None, interval: float = 10.0) -> dict:
+        """Wait until all jobs in the experiment are completed or failed."""
+        exp_id = experiment_id or self.experiment_id
+        if not exp_id:
+            raise ValueError("experiment_id required")
 
-        Args:
-            poll_interval: Seconds between status checks
-            callback: Optional function called with stats on each poll
-
-        Returns:
-            Final stats
-        """
-        import time
-
+        print(f"Waiting for experiment {exp_id} to complete...")
         while True:
-            stats = self.stats()
-            if callback:
-                callback(stats)
-
-            pending = stats.get("pending", 0)
-            running = stats.get("running", 0)
+            s = self.stats(exp_id)
+            total = s.get("total", 0)
+            completed = s.get("completed", 0)
+            failed = s.get("failed", 0)
+            running = s.get("running", 0)
+            pending = s.get("pending", 0)
+            pct = (completed + failed) / total * 100 if total > 0 else 0
+            print(
+                f"\rProgress: {pct:.1f}% ({completed + failed}/{total}) | Running: {running} | Pending: {pending}   ",
+                end="",
+            )
 
             if pending == 0 and running == 0:
-                return stats
+                print(f"\nDone! Completed: {completed}, Failed: {failed}")
+                return s
 
-            time.sleep(poll_interval)
+            time.sleep(interval)
 
 
-def main():
-    import argparse
+def _client(server: str = "http://localhost:8000") -> JobClient:
+    return JobClient(server)
 
-    parser = argparse.ArgumentParser(description="Job client CLI")
-    parser.add_argument("--server", default="http://localhost:8000", help="Server URL")
-    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # Submit command
-    submit_parser = subparsers.add_parser("submit", help="Submit a job")
-    submit_parser.add_argument("job_id", help="Job ID")
-    submit_parser.add_argument("payload", help="JSON payload")
+def create_experiment(
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    num_jobs: Optional[int] = None,
+    server: str = "http://localhost:8000",
+):
+    """Create a new experiment."""
+    return _client(server).create_experiment(name, description, num_jobs)
 
-    # Stats command
-    subparsers.add_parser("stats", help="Get queue statistics")
 
-    # Get command
-    get_parser = subparsers.add_parser("get", help="Get job details")
-    get_parser.add_argument("job_id", help="Job ID")
+def list_experiments(server: str = "http://localhost:8000"):
+    """List all experiments."""
+    return _client(server).list_experiments()
 
-    # Retry command
-    retry_parser = subparsers.add_parser("retry", help="Retry a failed job")
-    retry_parser.add_argument("job_id", nargs="?", help="Job ID (omit for all failed)")
 
-    # Delete command
-    delete_parser = subparsers.add_parser("delete", help="Delete a job")
-    delete_parser.add_argument("job_id", help="Job ID")
+def get_experiment(experiment_id: str, server: str = "http://localhost:8000"):
+    """Get experiment details."""
+    return _client(server).get_experiment(experiment_id)
 
-    # Wait command
-    wait_parser = subparsers.add_parser("wait", help="Wait for all jobs to complete")
-    wait_parser.add_argument("--interval", type=float, default=10.0, help="Poll interval")
 
-    args = parser.parse_args()
-    client = JobClient(args.server)
-
-    if args.command == "submit":
-        result = client.submit(args.job_id, json.loads(args.payload))
-        print(json.dumps(result, indent=2))
-
-    elif args.command == "stats":
-        stats = client.stats()
-        print(f"Pending:   {stats.get('pending', 0)}")
-        print(f"Running:   {stats.get('running', 0)}")
-        print(f"Completed: {stats.get('completed', 0)}")
-        print(f"Failed:    {stats.get('failed', 0)}")
-        print(f"Total:     {stats.get('total', 0)}")
-
-    elif args.command == "get":
-        result = client.get(args.job_id)
-        print(json.dumps(result, indent=2))
-
-    elif args.command == "retry":
-        if args.job_id:
-            result = client.retry(args.job_id)
-        else:
-            result = client.retry_all_failed()
-        print(json.dumps(result, indent=2))
-
-    elif args.command == "delete":
-        result = client.delete(args.job_id)
-        print(json.dumps(result, indent=2))
-
-    elif args.command == "wait":
-
-        def print_progress(stats):
-            total = stats.get("total", 0)
-            completed = stats.get("completed", 0)
-            failed = stats.get("failed", 0)
-            running = stats.get("running", 0)
-            pending = stats.get("pending", 0)
-            pct = (completed + failed) / total * 100 if total > 0 else 0
-            print(f"\rProgress: {pct:.1f}% ({completed + failed}/{total}) | Running: {running} | Pending: {pending}   ", end="")
-
-        print("Waiting for jobs to complete...")
-        final = client.wait_for_completion(poll_interval=args.interval, callback=print_progress)
-        print(f"\nDone! Completed: {final.get('completed', 0)}, Failed: {final.get('failed', 0)}")
+def delete_experiment(experiment_id: str, server: str = "http://localhost:8000"):
+    """Delete an experiment and all its jobs."""
+    return _client(server).delete_experiment(experiment_id)
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+
+    fire.Fire(
+        {
+            "create": create_experiment,
+            "list": list_experiments,
+            "get": get_experiment,
+            "delete": delete_experiment,
+        }
+    )
