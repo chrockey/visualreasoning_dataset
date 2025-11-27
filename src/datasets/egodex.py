@@ -28,6 +28,18 @@ class EgoDexDataset(BaseDataset):
         ]
 
     def get_video(self, video_name: str) -> Dict[str, Any]:
+        """Load a single video from the EgoDex dataset.
+
+        Args:
+            video_name: Video identifier in format "{part_name}/{task_name}/{video_id}"
+
+        Returns:
+            Dict containing:
+                - video_name (str): The video identifier
+                - frames (np.ndarray): Shape (num_frames, 1080, 1920, 3) RGB frames
+                - description (str): Task name as natural language
+                - metadata (dict): Camera params, hand keypoints (MANO), transforms, etc.
+        """
         parts = video_name.split("/")
         part_name, task_name, video_id = parts[0], parts[1], parts[2]
 
@@ -47,6 +59,7 @@ class EgoDexDataset(BaseDataset):
             metadata["mano"] = self._load_hdf5(mano_path)
 
         return {
+            "video_name": video_name,
             "frames": frames,
             "description": description,
             "metadata": metadata,
@@ -85,7 +98,8 @@ if __name__ == "__main__":
     print(f"Video names: {dataset.video_names}\n")
 
     data_dict = dataset[0]
-    print(f"\nframes shape: {data_dict['frames'].shape}")
+    print(f"\nvideo_name: {data_dict['video_name']}")
+    print(f"frames shape: {data_dict['frames'].shape}")
     print(f"description: {data_dict['description']}")
     print(f"\nmetadata keys: {list(data_dict['metadata'].keys())}")
 

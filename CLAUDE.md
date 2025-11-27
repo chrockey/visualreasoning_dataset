@@ -25,6 +25,12 @@ python -m src.job_server.pipeline_worker --experiment EXPERIMENT_ID [--server UR
 ```
 The worker fetches experiment info to get the config file path, then loads pipeline settings from that file.
 
+### Test Datasets
+```bash
+python -m src.datasets.egodex
+python -m src.datasets.oxe
+```
+
 ### Test Individual Pipeline
 ```bash
 python -m src.pipelines.affordance_type1
@@ -41,6 +47,26 @@ python -m src.job_server.client delete EXPERIMENT_ID
 ```
 
 ## Architecture
+
+### Datasets (`src/datasets/`)
+All datasets extend `BaseDataset` and provide:
+- `video_name` (str): Video/episode identifier for tracking annotations
+- `frames` (np.ndarray): Video frames as (N, H, W, 3) RGB array
+- `description` (str): Natural language task description
+- `metadata` (dict): Dataset-specific annotations
+
+**EgoDex** (`egodex.py`): Egocentric hand manipulation videos
+- Format: `video_name = "{part}/{task}/{video_id}"` (e.g., `"part1/add_remove_lid/0"`)
+- Data: MP4 videos + HDF5 metadata (camera params, MANO hand poses, joint transforms)
+- Frames: (N, 1080, 1920, 3)
+
+**Open X-Embodiment** (`oxe.py`): Robot manipulation episodes from TFRecord shards
+- Format: `video_name = "{dataset}/{shard_id}/{episode_in_shard}"` (e.g., `"asu_table_top.../00000/0"`)
+- Data: TFRecord files with robot states, actions, language instructions, embeddings
+- Frames: (N, 224, 224, 3)
+- Metadata includes `tfrecord_info` dict for shard-based annotation tracking:
+  - `dataset_name`, `shard_idx`, `episode_in_shard`, `split`, `tfrecord_path`
+- Annotations should be saved by shard: group episodes by `{dataset}/{shard_id}` for input-annotation matching
 
 ### Models (`src/models/`)
 - **Molmo**: VLM wrapper that extracts (x, y) point coordinates from images via natural language queries. Uses `extract_points()` to parse model output into pixel coordinates.

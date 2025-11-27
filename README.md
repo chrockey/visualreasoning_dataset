@@ -13,27 +13,64 @@ Pipeline system for visual reasoning dataset annotation using Molmo and SAM2.
 | Dataset | Status | Additional Metadata |
 |---------|--------|---------------------|
 | **EgoDex** | ✅ | Camera parameters (intrinsics/extrinsics), joint transforms (70+ joints), confidence scores, MANO hand poses |
+| **Open X-Embodiment** | ✅ | Robot states (joint angles), actions, language instructions, 512-dim language embeddings |
 | **AgiBotWorld** | ⬜️ | TBD |
 | **HoloAssist** | ⬜️ | TBD |
-| **Open-X-Embodiment** | ⬜️ | TBD |
 
-All datasets provide:
+All datasets inherit from `BaseDataset` and provide:
+- `video_name`: Video identifier string (for tracking annotations)
 - `frames`: Video frames as (N, H, W, 3) numpy array
 - `description`: Task description string
 - `metadata`: Dataset-specific annotations and additional data
+
+### Using Datasets
+
+```python
+from src.datasets.egodex import EgoDexDataset
+from src.datasets.oxe import OXEDataset
+
+# EgoDex: Egocentric hand manipulation videos
+dataset = EgoDexDataset()  # Default: vla-dataset-samples/egodex
+print(f"Videos: {len(dataset)}")
+data = dataset[0]
+# data['video_name']: "part1/add_remove_lid/0"
+# data['frames']: (288, 1080, 1920, 3)
+# data['metadata']: camera, MANO hand poses, transforms
+
+# Open X-Embodiment: Robot manipulation episodes
+dataset = OXEDataset()  # Default: vla-dataset-samples/open-x-embodiment
+print(f"Episodes: {len(dataset)}")
+data = dataset[0]
+# data['video_name']: "asu_table_top_converted_externally_to_rlds/00000/0"
+#                     {dataset_name}/{shard_id}/{episode_in_shard}
+# data['frames']: (355, 224, 224, 3)
+# data['metadata']['state']: robot joint states
+# data['metadata']['action']: robot actions
+# data['metadata']['language_embedding']: 512-dim embedding
+# data['metadata']['tfrecord_info']: shard tracking info for annotations
+```
 
 ## Project Structure
 
 ```
 src/
-├── models/                # Model wrappers
-│   ├── molmo.py          # VLM for point extraction
-│   └── sam2.py           # Segmentation model
-└── pipelines/            # <-- WORK HERE
-    ├── base.py
-    ├── affordance_type1.py
-    ├── affordance_type2.py
-    └── visual_trace.py
+├── datasets/             # Dataset loaders
+│   ├── base.py          # BaseDataset abstract class
+│   ├── egodex.py        # EgoDex (egocentric hand manipulation)
+│   └── oxe.py           # Open X-Embodiment (robot manipulation)
+├── models/              # Model wrappers
+│   ├── molmo.py         # VLM for point extraction
+│   └── sam2.py          # Segmentation model
+├── pipelines/           # <-- WORK HERE
+│   ├── base.py
+│   ├── affordance_type1.py
+│   ├── affordance_type2.py
+│   └── visual_trace.py
+└── job_server/          # Distributed job system
+    ├── server.py        # FastAPI REST server
+    ├── worker.py        # Base worker class
+    ├── pipeline_worker.py
+    └── client.py        # CLI client
 ```
 
 ## Testing Pipelines
