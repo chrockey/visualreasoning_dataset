@@ -1,6 +1,7 @@
 from typing import Any, Dict
 
 from .base import BasePipeline, load_config
+from ..models.gemma import Gemma
 
 # TODO : Implement the VisualTracePipeline
 # 1. Load the Gemma, CoTracker v3, Grounded-SAM2 models
@@ -12,10 +13,10 @@ from .base import BasePipeline, load_config
 class VisualTracePipeline(BasePipeline):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.object_extractor = None
+        self.object_extractor = Gemma(config["gemma"]["model_id"])
         self.grounded_segmenter = None
         self.keypoint_tracker = None
-
+        
     def preprocess(self, data_dict: Dict[str, Any]):
         raise NotImplementedError
 
