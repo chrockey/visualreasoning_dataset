@@ -14,8 +14,8 @@ Pipeline system for visual reasoning dataset annotation using Molmo and SAM2.
 |---------|--------|---------------------|
 | **EgoDex** | ✅ | Camera parameters (intrinsics/extrinsics), joint transforms (70+ joints), confidence scores, MANO hand poses |
 | **Open X-Embodiment** | ✅ | Robot states (joint angles), actions, 512-dim language embeddings |
-| **AgiBotWorld** | ⬜️ | TBD |
-| **HoloAssist** | ⬜️ | TBD |
+| **HoloAssist** | ✅ | Hand poses (left/right), depth |
+| **AgiBotWorld** | ✅ | Camera parameters (intrinsics/extrinsics), additional views, actions, proprio_stats |
 
 All datasets inherit from `BaseDataset` and provide:
 - `video_name`: Video identifier string (for tracking annotations)
@@ -28,6 +28,7 @@ All datasets inherit from `BaseDataset` and provide:
 ```python
 from src.datasets.egodex import EgoDexDataset
 from src.datasets.oxe import OXEDataset
+from src.datasets.holoassist import HoloAssistDataset
 
 # EgoDex: Egocentric hand manipulation videos
 dataset = EgoDexDataset()  # Default: vla-dataset-samples/egodex
@@ -48,6 +49,59 @@ data = dataset[0]
 # data['metadata']['action']: robot actions
 # data['metadata']['language_embedding']: 512-dim embedding
 # data['metadata']['tfrecord_info']: shard tracking info for annotations
+
+# HoloAssist: Egocentric human interaction dataset
+dataset = HoloAssistDataset()
+print(f"Videos: {len(dataset)}")
+data = dataset[0]
+# [f.shape for f in data['frames']]
+# [(423, 504, 896, 3),
+#  (889, 504, 896, 3),
+#  (5772, 504, 896, 3),
+#  (171, 504, 896, 3),
+#  (272, 504, 896, 3),
+#  (616, 504, 896, 3),
+#  (185, 504, 896, 3),
+#  (643, 504, 896, 3),
+#  (353, 504, 896, 3)]
+# data['description']
+# ['The student grabs the GoPro.',
+#  'The student changes the battery for the GoPro.',
+#  'The student opens the GoPro.',
+#  'The student turns on their GoPro.',
+#  'The student turns off the gopro.',
+#  'The student assembles the mounting_peg.',
+#  'The student disassemble the mounting_peg.',
+#  'The student assemble handheld_grip.',
+#  'The students disassemble the handheld_grip.']
+# data['metadata']['depth']: Depth
+# data['metadata']['hands_left']: Hand pose (left)
+# data['metadata']['hands_right']: Hand pose (right)
+# data['metadata']['pose_sync']: Camera pose
+
+# AgiBotWorld-Beta: Bimanual manipulation dataset
+dataset = AgiBotWorldBetaDataset()
+print(f"Episodes: {len(dataset)}")
+data = dataset[0]
+# [f.shape for f in data['frames']]
+# [(151, 480, 640, 3),
+#  (239, 480, 640, 3),
+#  (165, 480, 640, 3),
+#  (197, 480, 640, 3),
+#  (168, 480, 640, 3),
+#  (276, 480, 640, 3)]
+#  data['description']
+# ['Retrieve cucumber from the shelf.',
+#  'Place the held cucumber into the plastic bag in the shopping cart.',
+#  'Retrieve tomato from the shelf.',
+#  'Place the held tomato into the plastic bag in the shopping cart.',
+#  'Retrieve corn from the shelf.',
+#  "Place the held corn into the shopping cart's plastic bag."]
+# data['metadata']['hand_left_frames]: frames from hand-left cam
+# data['metadata']['hand_right_frames]: frames from hand-right cam
+# data['metadata']['action_config']: action text, skill(pick,place,..)
+# data['metadata']['proprio_stats]: effector (orientation, velocity, ..)
+
 ```
 
 ## Project Structure
