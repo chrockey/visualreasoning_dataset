@@ -21,10 +21,9 @@ Admin panel available at http://localhost:8000/admin
 
 ### Run Pipeline Worker
 ```bash
-cp config/config.example.yaml config.yaml
-# Edit config.yaml
-python -m src.job_server.pipeline_worker --config config.yaml
+python -m src.job_server.pipeline_worker --experiment EXPERIMENT_ID [--server URL]
 ```
+The worker fetches experiment info to get the config file path, then loads pipeline settings from that file.
 
 ### Test Individual Pipeline
 ```bash
@@ -64,7 +63,8 @@ FastAPI + SQLAlchemy + SQLite job distribution system with experiments containin
 - **client.py**: `JobClient` for submitting jobs and monitoring. Also has CLI interface.
 
 ### Job Flow
-1. Create experiment via client
+1. Create experiment via client with `config_file` path
 2. Submit jobs (each has job_id + payload dict)
-3. Workers fetch pending jobs, mark as running, process, mark as completed/failed
-4. Monitor via `client.stats()` or `client.wait_for_completion()`
+3. Workers fetch experiment info to get config, then process jobs
+4. Failed jobs auto-retry up to `MAX_JOB_RETRIES` (default 3) times
+5. Experiment status auto-updates to `completed` when all jobs are done

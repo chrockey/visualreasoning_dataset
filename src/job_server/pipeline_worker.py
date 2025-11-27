@@ -2,27 +2,21 @@
 Pipeline Worker - Runs pipelines on jobs from the job server.
 
 Usage:
-    python -m src.job_server.pipeline_worker --config config.yaml
+    python -m src.job_server.pipeline_worker --experiment EXP_ID [--server URL]
 
-Config file (YAML):
-    server:
-        url: http://localhost:8000
-        poll_interval: 5.0
+Config structure:
+    config/{experiment_config}.yaml  - Worker settings + pipeline name
+        worker:
+            save_dir: /path/to/results
+            stop_when_empty: true
+        pipeline:
+            name: affordance_type1
 
-    experiment:
-        id: exp-001  # Required: experiment to fetch jobs from
-
-    worker:
-        id: worker-1  # optional, auto-generated if not set
-        max_jobs: null  # null = unlimited
-        save_dir: /path/to/results
-        stop_when_empty: true  # Stop when no more jobs
-
-    pipeline:
-        name: affordance_type1
-        # Pipeline-specific arguments passed to __init__
-        model_size: large
-        threshold: 0.5
+    config/{pipeline_name}.yaml  - Pipeline-specific settings
+        molmo:
+            model_id: allenai/Molmo-7B-D-0924
+        sam2:
+            model_cfg: sam2_hiera_l.yaml
 """
 
 import argparse
@@ -44,13 +38,13 @@ PIPELINES = {
 }
 
 
-def load_pipeline(pipeline_name: str, config: Optional[Dict[str, Any]] = None):
+def load_pipeline(pipeline_name: str, config: Dict[str, Any]):
     """
     Dynamically load and instantiate a pipeline class.
 
     Args:
         pipeline_name: Name of the pipeline (key in PIPELINES registry)
-        config: Optional dict of kwargs to pass to pipeline __init__
+        config: Config dict to pass to pipeline __init__
     """
     if pipeline_name not in PIPELINES:
         raise ValueError(f"Unknown pipeline: {pipeline_name}. Available: {list(PIPELINES.keys())}")
@@ -62,8 +56,7 @@ def load_pipeline(pipeline_name: str, config: Optional[Dict[str, Any]] = None):
     module = importlib.import_module(module_path)
     pipeline_class = getattr(module, class_name)
 
-    config = config or {}
-    return pipeline_class(**config)
+    return pipeline_class(config)
 
 
 class PipelineWorker(BaseWorker):
@@ -74,14 +67,14 @@ class PipelineWorker(BaseWorker):
         server_url: str,
         experiment_id: str,
         pipeline_name: str,
+        pipeline_config: Dict[str, Any],
         save_dir: str,
-        pipeline_config: Optional[Dict[str, Any]] = None,
         worker_id: str = None,
         **kwargs,
     ):
         super().__init__(server_url, experiment_id=experiment_id, worker_id=worker_id, **kwargs)
         self.pipeline_name = pipeline_name
-        self.pipeline_config = pipeline_config or {}
+        self.pipeline_config = pipeline_config
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.pipeline = None
@@ -89,8 +82,6 @@ class PipelineWorker(BaseWorker):
     def setup(self):
         """Load the pipeline (and its models like Molmo, SAM2)."""
         logger.info(f"Loading pipeline: {self.pipeline_name}")
-        if self.pipeline_config:
-            logger.info(f"Pipeline config: {self.pipeline_config}")
         self.pipeline = load_pipeline(self.pipeline_name, self.pipeline_config)
         logger.info("Pipeline loaded successfully")
 
@@ -124,42 +115,52 @@ class PipelineWorker(BaseWorker):
 
 
 def main():
+    import requests
+
     parser = argparse.ArgumentParser(description="Run pipeline worker")
-    parser.add_argument(
-        "--config",
-        required=True,
-        help="Path to YAML config file",
-    )
+    parser.add_argument("--experiment", required=True, help="Experiment ID to process")
+    parser.add_argument("--server", default="http://localhost:8000", help="Job server URL")
+    parser.add_argument("--worker-id", help="Worker ID (auto-generated if not set)")
+    parser.add_argument("--poll-interval", type=float, default=5.0, help="Poll interval in seconds")
+    parser.add_argument("--max-jobs", type=int, help="Maximum jobs to process")
     args = parser.parse_args()
 
-    # Load config from YAML file
-    with open(args.config) as f:
+    from src.pipelines.base import load_config
+
+    # Fetch experiment info to get config file path
+    resp = requests.get(f"{args.server}/experiments/{args.experiment}")
+    if resp.status_code != 200:
+        raise ValueError(f"Failed to fetch experiment: {resp.text}")
+
+    experiment = resp.json()
+    config_file = experiment.get("config_file")
+    if not config_file:
+        raise ValueError(f"Experiment {args.experiment} has no config_file set")
+
+    # Load experiment config (worker settings + pipeline name)
+    config_path = Path(__file__).parent.parent.parent / "config" / config_file
+    with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    server_config = config.get("server", {})
-    experiment_config = config.get("experiment", {})
     worker_config = config.get("worker", {})
-    pipeline_config = config.get("pipeline", {})
+    pipeline_name = config.get("pipeline", {}).get("name")
+    if not pipeline_name:
+        raise ValueError(f"No pipeline.name specified in {config_file}")
 
-    # Extract pipeline name, rest goes to pipeline __init__
-    pipeline_name = pipeline_config.pop("name")
-
-    # Experiment ID is required
-    experiment_id = experiment_config.get("id")
-    if not experiment_id:
-        raise ValueError("experiment.id is required in config")
+    # Load pipeline config from config/{pipeline_name}.yaml
+    pipeline_config = load_config(pipeline_name)
 
     worker = PipelineWorker(
-        server_url=server_config.get("url", "http://localhost:8000"),
-        experiment_id=experiment_id,
+        server_url=args.server,
+        experiment_id=args.experiment,
         pipeline_name=pipeline_name,
-        save_dir=worker_config["save_dir"],
         pipeline_config=pipeline_config,
-        worker_id=worker_config.get("id"),
-        poll_interval=server_config.get("poll_interval", 5.0),
+        save_dir=worker_config["save_dir"],
+        worker_id=args.worker_id or worker_config.get("id"),
+        poll_interval=args.poll_interval,
         stop_when_empty=worker_config.get("stop_when_empty", False),
     )
-    worker.run(max_jobs=worker_config.get("max_jobs"))
+    worker.run(max_jobs=args.max_jobs or worker_config.get("max_jobs"))
 
 
 if __name__ == "__main__":

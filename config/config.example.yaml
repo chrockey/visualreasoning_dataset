@@ -1,20 +1,10 @@
-# Pipeline Worker Configuration
-
-server:
-  url: http://localhost:8000
-  poll_interval: 5.0  # seconds between polling when no jobs
-
-experiment:
-  id: exp-001  # Required: experiment ID to fetch jobs from
+# Experiment Configuration
+# This file is referenced by experiment.config_file
+# Pipeline-specific settings are in config/{pipeline_name}.yaml
 
 worker:
-  # id: worker-1  # optional, auto-generated from hostname if not set
-  max_jobs: null  # null = unlimited, or set a number to stop after N jobs
   save_dir: /path/to/results
   stop_when_empty: true  # Stop when no pending/running jobs remain
 
 pipeline:
   name: affordance_type1  # one of: affordance_type1, affordance_type2, visual_trace
-  # Pipeline-specific arguments below (passed to pipeline __init__)
-  # model_size: large
-  # threshold: 0.5

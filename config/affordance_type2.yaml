@@ -1,0 +1,7 @@
+# AffordanceType2Pipeline Configuration
+
+molmo:
+  model_id: allenai/Molmo-7B-D-0924
+
+sam2:
+  model_id: facebook/sam2-hiera-small

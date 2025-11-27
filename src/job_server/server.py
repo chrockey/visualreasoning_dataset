@@ -24,6 +24,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     create_engine,
@@ -35,6 +36,9 @@ from sqladmin import Admin, ModelView
 # Database setup
 DB_PATH = Path(__file__).parent / "jobs.db"
 DATABASE_URL = f"sqlite:///{DB_PATH}"
+
+# Configuration
+MAX_JOB_RETRIES = 3  # Maximum number of times a failed job can be retried
 
 engine = create_engine(
     DATABASE_URL,
@@ -58,7 +62,6 @@ class JobStatus(str, Enum):
 class ExperimentStatus(str, Enum):
     ACTIVE = "active"
     COMPLETED = "completed"
-    PAUSED = "paused"
 
 
 # ============ SQLAlchemy Models ============
@@ -70,6 +73,7 @@ class Experiment(Base):
     experiment_id = Column(String, primary_key=True)
     name = Column(String, nullable=True)
     description = Column(Text, nullable=True)
+    config_file = Column(String, nullable=True)
     status = Column(String, nullable=False, default=ExperimentStatus.ACTIVE.value)
     created_at = Column(Float, nullable=False)
 
@@ -120,6 +124,7 @@ class Job(Base):
     started_at = Column(Float, nullable=True)
     completed_at = Column(Float, nullable=True)
     error_message = Column(Text, nullable=True)
+    failure_count = Column(Integer, nullable=False, default=0)
 
     experiment = relationship("Experiment", back_populates="jobs")
 
@@ -140,6 +145,7 @@ class ExperimentCreate(BaseModel):
     experiment_id: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
+    config_file: Optional[str] = None
     num_jobs: Optional[int] = None
 
 
@@ -147,6 +153,7 @@ class ExperimentResponse(BaseModel):
     experiment_id: str
     name: Optional[str]
     description: Optional[str]
+    config_file: Optional[str]
     status: ExperimentStatus
     created_at: float
 
@@ -169,6 +176,7 @@ class JobResponse(BaseModel):
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     error_message: Optional[str] = None
+    failure_count: int = 0
 
     class Config:
         from_attributes = True
@@ -276,6 +284,7 @@ def _experiment_to_response(exp: Experiment) -> ExperimentResponse:
         experiment_id=exp.experiment_id,
         name=exp.name,
         description=exp.description,
+        config_file=exp.config_file,
         status=ExperimentStatus(exp.status),
         created_at=exp.created_at,
     )
@@ -292,6 +301,7 @@ def _job_to_response(job: Job) -> JobResponse:
         started_at=job.started_at,
         completed_at=job.completed_at,
         error_message=job.error_message,
+        failure_count=job.failure_count,
     )
 
 
@@ -313,6 +323,7 @@ def create_experiment(exp: ExperimentCreate, db: Session = Depends(get_db)):
         experiment_id=experiment_id,
         name=exp.name,
         description=exp.description,
+        config_file=exp.config_file,
         status=ExperimentStatus.ACTIVE.value,
         created_at=created_at,
     )
@@ -369,30 +380,6 @@ def get_experiment_stats(experiment_id: str, db: Session = Depends(get_db)):
 
     stats["total"] = sum(stats.values())
     return stats
-
-
-@app.put("/experiments/{experiment_id}/pause")
-def pause_experiment(experiment_id: str, db: Session = Depends(get_db)):
-    """Pause an experiment (no new jobs will be fetched)."""
-    experiment = db.query(Experiment).filter(Experiment.experiment_id == experiment_id).first()
-    if experiment is None:
-        raise HTTPException(status_code=404, detail=f"Experiment {experiment_id} not found")
-
-    experiment.status = ExperimentStatus.PAUSED.value
-    db.commit()
-    return {"status": "paused", "experiment_id": experiment_id}
-
-
-@app.put("/experiments/{experiment_id}/resume")
-def resume_experiment(experiment_id: str, db: Session = Depends(get_db)):
-    """Resume a paused experiment."""
-    experiment = db.query(Experiment).filter(Experiment.experiment_id == experiment_id).first()
-    if experiment is None:
-        raise HTTPException(status_code=404, detail=f"Experiment {experiment_id} not found")
-
-    experiment.status = ExperimentStatus.ACTIVE.value
-    db.commit()
-    return {"status": "active", "experiment_id": experiment_id}
 
 
 @app.delete("/experiments/{experiment_id}")
@@ -471,10 +458,7 @@ def fetch_job(experiment_id: str, worker_id: str, db: Session = Depends(get_db))
     experiment = db.query(Experiment).filter(Experiment.experiment_id == experiment_id).first()
     if experiment is None:
         raise HTTPException(status_code=404, detail=f"Experiment {experiment_id} not found")
-    if experiment.status == ExperimentStatus.PAUSED.value:
-        return None
 
-    # Get the oldest pending job and claim it
     job = (
         db.query(Job)
         .filter(Job.experiment_id == experiment_id, Job.status == JobStatus.PENDING.value)
@@ -510,51 +494,41 @@ def update_job(job_id: str, update: JobUpdate, db: Session = Depends(get_db)) ->
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-    job.status = update.status.value
     job.error_message = update.error_message
-    if update.status in (JobStatus.COMPLETED, JobStatus.FAILED):
+
+    if update.status == JobStatus.COMPLETED:
+        job.status = JobStatus.COMPLETED.value
         job.completed_at = time.time()
+    elif update.status == JobStatus.FAILED:
+        job.failure_count += 1
+        if job.failure_count >= MAX_JOB_RETRIES:
+            job.status = JobStatus.FAILED.value
+            job.completed_at = time.time()
+        else:
+            job.status = JobStatus.PENDING.value
 
-    db.commit()
-    db.refresh(job)
-    return _job_to_response(job)
-
-
-@app.post("/jobs/{job_id}/retry")
-def retry_job(job_id: str, db: Session = Depends(get_db)) -> JobResponse:
-    """Reset a failed job back to pending status."""
-    job = db.query(Job).filter(Job.job_id == job_id, Job.status == JobStatus.FAILED.value).first()
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found or not failed")
-
-    job.status = JobStatus.PENDING.value
-    job.worker_id = None
-    job.started_at = None
-    job.completed_at = None
-    job.error_message = None
-    db.commit()
-    db.refresh(job)
-    return _job_to_response(job)
-
-
-@app.post("/experiments/{experiment_id}/jobs/retry-all-failed")
-def retry_all_failed(experiment_id: str, db: Session = Depends(get_db)):
-    """Reset all failed jobs in an experiment back to pending."""
-    result = (
-        db.query(Job)
-        .filter(Job.experiment_id == experiment_id, Job.status == JobStatus.FAILED.value)
-        .update(
-            {
-                Job.status: JobStatus.PENDING.value,
-                Job.worker_id: None,
-                Job.started_at: None,
-                Job.completed_at: None,
-                Job.error_message: None,
-            }
+    # Check if experiment is done (no pending or running jobs)
+    if job.status in (JobStatus.COMPLETED.value, JobStatus.FAILED.value):
+        pending_or_running = (
+            db.query(func.count(Job.job_id))
+            .filter(
+                Job.experiment_id == job.experiment_id,
+                Job.status.in_([JobStatus.PENDING.value, JobStatus.RUNNING.value]),
+            )
+            .scalar()
         )
-    )
+        if pending_or_running == 0:
+            experiment = (
+                db.query(Experiment)
+                .filter(Experiment.experiment_id == job.experiment_id)
+                .first()
+            )
+            if experiment:
+                experiment.status = ExperimentStatus.COMPLETED.value
+
     db.commit()
-    return {"retried": result}
+    db.refresh(job)
+    return _job_to_response(job)
 
 
 @app.delete("/jobs/{job_id}")
