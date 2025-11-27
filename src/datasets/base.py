@@ -6,18 +6,18 @@ from typing import Any, Dict, List
 class BaseDataset:
     def __init__(self, data_dir: str):
         self.data_dir = Path(data_dir)
-        self.episode_names = self.get_episode_names()
-        logging.info(f"Loaded {self.__class__.__name__} with {len(self.episode_names)} episodes")
+        self.video_names = self.get_video_names()
+        logging.info(f"Loaded {self.__class__.__name__} with {len(self.video_names)} videos")
 
-    def get_episode_names(self) -> List[str]:
+    def get_video_names(self) -> List[str]:
         raise NotImplementedError
 
-    def get_episode(self, episode_name: str) -> Dict[str, Any]:
+    def get_video(self, video_name: str) -> Dict[str, Any]:
         raise NotImplementedError
 
     def __len__(self) -> int:
-        return len(self.episode_names)
+        return len(self.video_names)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        episode_name = self.episode_names[idx]
-        return self.get_episode(episode_name)
+        video_name = self.video_names[idx]
+        return self.get_video(video_name)
