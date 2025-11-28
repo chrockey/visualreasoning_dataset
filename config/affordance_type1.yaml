@@ -1,7 +1,16 @@
 # AffordanceType1Pipeline Configuration
+mode: video  # 'image' or 'video' mode for processing
 
-molmo:
-  model_id: allenai/Molmo-7B-D-0924
+gemma:
+  model_id: google/gemma-2-2b-it  # Model for extracting main manipulated object
+
+grounded_sam2:
+  grounding_model: IDEA-Research/grounding-dino-base
+  sam2_checkpoint: null  # Optional: path to SAM2 checkpoint
+  sam2_model_config: null  # Optional: path to SAM2 config
+  box_threshold: 0.35  # Threshold for box detection
+  text_threshold: 0.25  # Threshold for text matching
 
 sam2:
-  model_id: facebook/sam2-hiera-small
+  model_id: facebook/sam2-hiera-small  # SAM2 model for video tracking
+  mask_selection_mode: smallest_mask
