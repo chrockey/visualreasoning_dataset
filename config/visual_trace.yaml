@@ -5,3 +5,6 @@ gemma:
 
 sam2:
   model_id: facebook/sam2-hiera-large
+
+cotracker:
+  model_id: facebookresearch/co-tracker:cotracker3_online
