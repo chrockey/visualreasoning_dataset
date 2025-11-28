@@ -1,6 +1,7 @@
 from typing import List, Dict, Any
 from pathlib import Path
 import json
+import os
 
 import numpy as np
 import tensorflow as tf
@@ -80,6 +81,12 @@ class OXEDataset(BaseDataset):
 
                 # Create identifiers for each episode in each shard
                 for shard_idx, shard_length in enumerate(shard_lengths):
+                    
+                    # Temporal safeguard for using example data
+                    tfrecord_path = self._get_tfrecord_path(dataset_name, shard_idx)
+                    if not os.path.isfile(tfrecord_path):
+                        continue
+
                     shard_length = int(shard_length)
                     for episode_in_shard in range(shard_length):
                         # Format: dataset_name/shard_id/episode_in_shard
@@ -104,13 +111,33 @@ class OXEDataset(BaseDataset):
         """
         # Parse video name
         parts = video_name.split("/")
-        dataset_name, shard_id, episode_in_shard = parts[0], parts[1], int(parts[2])
-        shard_idx = int(shard_id)
+        dataset_name, shard_idx, episode_in_shard = parts[0], int(parts[1]), int(parts[2])
 
         # Get cached dataset info
         if dataset_name not in self._dataset_cache:
             raise ValueError(f"Dataset {dataset_name} not found in cache")
 
+        # Get TFRecord path
+        tfrecord_path = self._get_tfrecord_path(dataset_name, shard_idx)
+
+        # Parse episode from TFRecord
+        episode_data = self._parse_tfrecord_episode(tfrecord_path, episode_in_shard)
+
+        # Add video_name to the returned data
+        episode_data['video_name'] = video_name
+
+        # Add TFRecord metadata for tracking
+        episode_data['metadata']['tfrecord_info'] = {
+            'dataset_name': dataset_name,
+            'shard_idx': shard_idx,
+            'episode_in_shard': episode_in_shard,
+            'split': tfrecord_path.name.split('-', 1)[1].split('.', 1)[0],
+            'tfrecord_path': str(tfrecord_path.relative_to(self.data_dir))
+        }
+
+        return episode_data
+    
+    def _get_tfrecord_path(self, dataset_name, shard_idx,):
         dataset_info = self._dataset_cache[dataset_name]['info']
         version_dir = self._dataset_cache[dataset_name]['version_dir']
 
@@ -128,23 +155,7 @@ class OXEDataset(BaseDataset):
             SHARD_X_OF_Y=f"{shard_idx:05d}-of-{num_shards:05d}"
         )
         tfrecord_path = version_dir / filename
-
-        # Parse episode from TFRecord
-        episode_data = self._parse_tfrecord_episode(tfrecord_path, episode_in_shard)
-
-        # Add video_name to the returned data
-        episode_data['video_name'] = video_name
-
-        # Add TFRecord metadata for tracking
-        episode_data['metadata']['tfrecord_info'] = {
-            'dataset_name': dataset_name,
-            'shard_idx': shard_idx,
-            'episode_in_shard': episode_in_shard,
-            'split': split_info['name'],
-            'tfrecord_path': str(tfrecord_path.relative_to(self.data_dir))
-        }
-
-        return episode_data
+        return tfrecord_path
 
     def _parse_tfrecord_episode(self, tfrecord_path: Path, episode_offset: int) -> Dict[str, Any]:
         """Parse a specific episode from a TFRecord file.

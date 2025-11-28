@@ -28,7 +28,7 @@ All datasets inherit from `BaseDataset` and provide:
 ```python
 from src.datasets.egodex import EgoDexDataset
 from src.datasets.oxe import OXEDataset
-from src.datasets.agiborworld import AgiBotWorldDataset
+from src.datasets.agibotworld import AgiBotWorldDataset
 from src.datasets.holoassist import HoloAssistDataset
 
 # EgoDex: Egocentric hand manipulation videos
@@ -109,9 +109,11 @@ data = dataset[0]
 
 ```
 src/
-├── datasets/             # Dataset loaders
+├── datasets/            # Dataset loaders
 │   ├── base.py          # BaseDataset abstract class
+│   ├── agibotworld.py   # AgiBotWorld-Beta (Bimanual manipulation robot manipulation)
 │   ├── egodex.py        # EgoDex (egocentric hand manipulation)
+│   ├── holoassist.py    # HoloAssist (Egocentric human interaction)
 │   └── oxe.py           # Open X-Embodiment (robot manipulation)
 ├── models/              # Model wrappers
 │   ├── molmo.py         # VLM for point extraction
