@@ -21,9 +21,7 @@ class VisualTracePipeline(BasePipeline):
         grounded_sam_config = config.get("grounded_sam", {})
         self.grounded_segmenter = GroundedSAM2(**grounded_sam_config)
         
-        self.keypoint_tracker = None
-        
-        # debug mode
+        self.keypoint_tracker = CoTracker(config["cotracker"]["model_id"])
         self.verbose = verbose
         self.visualizer = VisualTraceVisualizer()
         
@@ -44,10 +42,17 @@ class VisualTracePipeline(BasePipeline):
             # if no masks found, skip the frame           
             if masks.shape[0] == 0: continue
             
+            # Extract keypoints from masks
+            keypoints = CoTracker.extract_keypoints_from_masks(masks)  # (n, 3, 2)
+            # TODO: Pass keypoints to keypoint_tracker
+            tracked_keypoints, tracked_visibility = self.keypoint_tracker(frame_set, keypoints.reshape(1, -1, 2))
+            
             if self.verbose:
                 print(description)
                 print(word)
                 print(masks.shape, scores.shape, logits.shape, boxes.shape)
+                print(f"Keypoints shape: {keypoints.shape}")
+                print(f"Keypoints for first mask: {keypoints[0]}")
                 
                 self.visualizer.save_visualizations(image, masks[0], keypoints[0])
                 print(tracked_keypoints.shape, tracked_visibility.shape)
