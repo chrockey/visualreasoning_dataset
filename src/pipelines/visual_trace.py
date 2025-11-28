@@ -1,8 +1,9 @@
 from typing import Any, Dict
-import PIL.Image as Image
 from .base import BasePipeline, load_config
 from ..models.gemma import Gemma
 from ..models.grounded_sam import GroundedSAM2
+from ..models.cotracker import CoTracker
+from ..visualizers.visual_trace import VisualTraceVisualizer
 
 # TODO : Implement the VisualTracePipeline
 # 1. Load the Gemma, CoTracker v3, Grounded-SAM2 models
@@ -24,6 +25,7 @@ class VisualTracePipeline(BasePipeline):
         
         # debug mode
         self.verbose = verbose
+        self.visualizer = VisualTraceVisualizer()
         
     def preprocess(self, data_dict: Dict[str, Any]):
         raise NotImplementedError
@@ -47,9 +49,9 @@ class VisualTracePipeline(BasePipeline):
                 print(word)
                 print(masks.shape, scores.shape, logits.shape, boxes.shape)
                 
-                Image.fromarray(image).save("pre_image.png")
-                Image.fromarray(masks[0]).convert("L").save("post_image.png")
-
+                self.visualizer.save_visualizations(image, masks[0], keypoints[0])
+                print(tracked_keypoints.shape, tracked_visibility.shape)
+            
 if __name__ == "__main__":
     
     from src.datasets.agibotworld import AgiBotWorldDataset
