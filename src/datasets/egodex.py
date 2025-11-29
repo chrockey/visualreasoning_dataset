@@ -50,7 +50,16 @@ class EgoDexDataset(BaseDataset):
 
         assert video_path.exists(), f"Video file not found: {video_path}"
         frames = self._load_video_frames(video_path)
-        description = task_name.replace("_", " ")
+
+        with h5py.File(hdf5_path, "r") as root:
+            # natural language description of task
+            if root.attrs['llm_type'] == 'reversible':
+                direction = root.attrs['which_llm_description']
+                lang_instruct = root.attrs['llm_description' if direction == '1' else 'llm_description2'] 
+            else:
+                lang_instruct = root.attrs['llm_description']
+        
+        descriptions = [(0, len(frames)-1, lang_instruct)]
 
         metadata = {}
         if hdf5_path.exists():
@@ -61,7 +70,7 @@ class EgoDexDataset(BaseDataset):
         return {
             "video_name": video_name,
             "frames": frames,
-            "description": description,
+            "descriptions": descriptions,
             "metadata": metadata,
         }
 
@@ -100,7 +109,7 @@ if __name__ == "__main__":
     data_dict = dataset[0]
     print(f"\nvideo_name: {data_dict['video_name']}")
     print(f"frames shape: {data_dict['frames'].shape}")
-    print(f"description: {data_dict['description']}")
+    print(f"descriptions: {data_dict['descriptions']}")
     print(f"\nmetadata keys: {list(data_dict['metadata'].keys())}")
 
     for key, value in data_dict['metadata'].items():

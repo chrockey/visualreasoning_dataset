@@ -261,7 +261,7 @@ class OXEDataset(BaseDataset):
 
         return {
             'frames': frames,
-            'description': language_instruction,
+            'descriptions': [(0, len(frames)-1, language_instruction)],
             'metadata': metadata
         }
 
@@ -277,7 +277,7 @@ if __name__ == "__main__":
         print(f"\nFirst episode:")
         print(f"  video_name: {data_dict['video_name']}")
         print(f"  frames shape: {data_dict['frames'].shape}")
-        print(f"  description: {data_dict['description']}")
+        print(f"  descriptions: {data_dict['descriptions']}")
         print(f"  metadata keys: {list(data_dict['metadata'].keys())}")
 
         for key, value in data_dict['metadata'].items():
