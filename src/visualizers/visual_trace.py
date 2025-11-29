@@ -154,6 +154,7 @@ class VisualTraceVisualizer:
             segm_mask=segm_vector,
             query_frame=0,
             color_alpha=color_alpha,
+            tracks_leave_trace_override=0,
         )
         rendered = rendered.detach().cpu()
         annotated_frame = rendered[0, 0].permute(1, 2, 0).numpy().astype(np.uint8)
@@ -180,6 +181,9 @@ class VisualTraceVisualizer:
         tracks: np.ndarray,
         video_name: str,
         mask: Optional[np.ndarray] = None,
+        start_frame_idx: int = 0,
+        end_frame_idx: Optional[int] = None,
+        leave_trace: bool = True,
     ):
         frames_array = (
             frames.detach().cpu().numpy() if isinstance(frames, torch.Tensor) else np.asarray(frames)
@@ -188,6 +192,15 @@ class VisualTraceVisualizer:
             raise ValueError(
                 f"Expected frames of shape (T, H, W, 3), got {frames_array.shape}"
             )
+        clip_start = max(0, start_frame_idx)
+        clip_end = frames_array.shape[0] if end_frame_idx is None else min(
+            frames_array.shape[0], end_frame_idx + 1
+        )
+        if clip_end <= clip_start:
+            raise ValueError(
+                f"Invalid frame range [{clip_start}, {clip_end}) for frames of length {frames_array.shape[0]}"
+            )
+        frames_array = frames_array[clip_start:clip_end]
         if frames_array.dtype != np.uint8:
             frames_array = np.clip(frames_array, 0, 255).astype(np.uint8)
 
@@ -198,6 +211,7 @@ class VisualTraceVisualizer:
             raise ValueError(
                 f"Expected tracks of shape (T, N, 2), got {tracks_array.shape}"
             )
+        tracks_array = tracks_array[clip_start:clip_end]
 
         video_tensor = (
             torch.from_numpy(frames_array)
@@ -228,6 +242,9 @@ class VisualTraceVisualizer:
             segm_mask=segm_vector,
             query_frame=0,
             color_alpha=255,
+            tracks_leave_trace_override=(
+                self.tracks_leave_trace if leave_trace else 0
+            ),
         )
         rendered = rendered.detach().cpu().to(torch.uint8)
         self.save_video(rendered, filename=video_name)
@@ -267,6 +284,7 @@ class VisualTraceVisualizer:
         query_frame=0,
         compensate_for_camera_motion=False,
         color_alpha: int = 255,
+        tracks_leave_trace_override: Optional[int] = None,
     ):
         B, T, C, H, W = video.shape
         _, _, N, D = tracks.shape
@@ -308,12 +326,18 @@ class VisualTraceVisualizer:
             color[segm_mask <= 0] = np.array(self.color_map(0.0)[:3]) * 255.0
             vector_colors = np.repeat(color[None], T, axis=0)
 
+        tracks_leave_trace = (
+            self.tracks_leave_trace
+            if tracks_leave_trace_override is None
+            else tracks_leave_trace_override
+        )
+
         #  draw tracks
-        if self.tracks_leave_trace != 0:
+        if tracks_leave_trace != 0:
             for t in range(query_frame + 1, T):
                 first_ind = (
-                    max(0, t - self.tracks_leave_trace)
-                    if self.tracks_leave_trace >= 0
+                    max(0, t - tracks_leave_trace)
+                    if tracks_leave_trace >= 0
                     else 0
                 )
                 curr_tracks = tracks[first_ind : t + 1]
