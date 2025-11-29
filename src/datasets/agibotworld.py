@@ -78,15 +78,7 @@ class AgiBotWorldDataset(BaseDataset):
         )
 
         action_cfg = label_info.get("action_config", [])
-        head_by_action = self._split_by_actions(head_frames, action_cfg)
-        left_by_action = (
-            self._split_by_actions(left_frames, action_cfg) if left_frames is not None else None
-        )
-        right_by_action = (
-            self._split_by_actions(right_frames, action_cfg) if right_frames is not None else None
-        )
-
-        descriptions = [a["action_text"] for a in action_cfg]
+        descriptions = [(a['start_frame'], a['end_frame'], a["action_text"]) for a in action_cfg]
 
         camera_params = self._load_camera_params(data_path, task_id, episode_id_str)
 
@@ -100,8 +92,8 @@ class AgiBotWorldDataset(BaseDataset):
         proprio_stats = self._load_hdf5(proprio_path) if proprio_path.exists() else None
 
         metadata: Dict[str, Any] = {
-            "hand_left_frames": left_by_action,
-            "hand_right_frames": right_by_action,
+            "hand_left_frames": left_frames,
+            "hand_right_frames": right_frames,
             "action_cfg": action_cfg,
             "task_name": task_name,
             "init_scene_text": init_scene_text,
@@ -111,8 +103,8 @@ class AgiBotWorldDataset(BaseDataset):
 
         return {
             "video_name": video_name,
-            "frames": head_by_action,        # List[np.ndarray]
-            "description": descriptions,     # List[str]
+            "frames": head_frames,           # np.ndarray
+            "descriptions": descriptions,     # List[Tuple]
             "metadata": metadata,
         }
 
@@ -299,5 +291,5 @@ if __name__ == "__main__":
         print("video_name:", sample["video_name"])
         print("#actions:", len(sample["frames"]))
         print("frames[0].shape:", sample["frames"][0].shape if sample["frames"] else None)
-        print("description[0]:", sample["description"][0] if sample["description"] else None)
+        print("descriptions[0]:", sample["descriptions"][0] if sample["descriptions"] else None)
         print("metadata keys:", sample["metadata"].keys())

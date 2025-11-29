@@ -28,7 +28,7 @@ All datasets inherit from `BaseDataset` and provide:
 ```python
 from src.datasets.egodex import EgoDexDataset
 from src.datasets.oxe import OXEDataset
-from src.datasets.agiborworld import AgiBotWorldDataset
+from src.datasets.agibotworld import AgiBotWorldDataset
 from src.datasets.holoassist import HoloAssistDataset
 
 # EgoDex: Egocentric hand manipulation videos
@@ -37,15 +37,19 @@ print(f"Videos: {len(dataset)}")
 data = dataset[0]
 # data['video_name']: "part1/add_remove_lid/0"
 # data['frames']: (288, 1080, 1920, 3)
+# data['descriptions]: 
+# [(0, 287, 'Add lids onto four cups placed on a wooden table with a red background.')]
 # data['metadata']: camera, MANO hand poses, transforms
 
 # Open X-Embodiment: Robot manipulation episodes
 dataset = OXEDataset()  # Default: vla-dataset-samples/open-x-embodiment
 print(f"Episodes: {len(dataset)}")
 data = dataset[0]
-# data['video_name']: "asu_table_top_converted_externally_to_rlds/00000/0"
+# data['video_name']: "asu_table_top_converted_externally_to_rlds/00003/0"
 #                     {dataset_name}/{shard_id}/{episode_in_shard}
-# data['frames']: (355, 224, 224, 3)
+# data['frames']: (3225, 256, 256, 3)
+# data['descriptions]: 
+# [(0, 3224, 'Interact with the objects in diverse but meaningful ways.')]
 # data['metadata']['state']: robot joint states
 # data['metadata']['action']: robot actions
 # data['metadata']['language_embedding']: 512-dim embedding
@@ -55,20 +59,14 @@ data = dataset[0]
 dataset = AgiBotWorldDataset()
 print(f"Episodes: {len(dataset)}")
 data = dataset[0]
-# [f.shape for f in data['frames']]
-# [(151, 480, 640, 3),
-#  (239, 480, 640, 3),
-#  (165, 480, 640, 3),
-#  (197, 480, 640, 3),
-#  (168, 480, 640, 3),
-#  (276, 480, 640, 3)]
-#  data['description']
-# ['Retrieve cucumber from the shelf.',
-#  'Place the held cucumber into the plastic bag in the shopping cart.',
-#  'Retrieve tomato from the shelf.',
-#  'Place the held tomato into the plastic bag in the shopping cart.',
-#  'Retrieve corn from the shelf.',
-#  "Place the held corn into the shopping cart's plastic bag."]
+# data['frames']: (1295, 480, 640, 3)
+# data['descriptions']:
+# [(36, 187, 'Retrieve cucumber from the shelf.'),
+#  (187, 426, 'Place the held cucumber into the plastic bag in the shopping cart.'),
+#  (426, 591, 'Retrieve tomato from the shelf.'),
+#  (591, 788, 'Place the held tomato into the plastic bag in the shopping cart.'),
+#  (788, 956, 'Retrieve corn from the shelf.'),
+#  (956, 1232, "Place the held corn into the shopping cart's plastic bag.")]
 # data['metadata']['hand_left_frames]: frames from hand-left cam
 # data['metadata']['hand_right_frames]: frames from hand-right cam
 # data['metadata']['action_config']: action text, skill(pick,place,..)
@@ -78,26 +76,17 @@ data = dataset[0]
 dataset = HoloAssistDataset()
 print(f"Videos: {len(dataset)}")
 data = dataset[0]
-# [f.shape for f in data['frames']]
-# [(423, 504, 896, 3),
-#  (889, 504, 896, 3),
-#  (5772, 504, 896, 3),
-#  (171, 504, 896, 3),
-#  (272, 504, 896, 3),
-#  (616, 504, 896, 3),
-#  (185, 504, 896, 3),
-#  (643, 504, 896, 3),
-#  (353, 504, 896, 3)]
-# data['description']
-# ['The student grabs the GoPro.',
-#  'The student changes the battery for the GoPro.',
-#  'The student opens the GoPro.',
-#  'The student turns on their GoPro.',
-#  'The student turns off the gopro.',
-#  'The student assembles the mounting_peg.',
-#  'The student disassemble the mounting_peg.',
-#  'The student assemble handheld_grip.',
-#  'The students disassemble the handheld_grip.']
+# data['frames]: (9933, 504, 896, 3)
+# data['descriptions']
+# [(268, 691, 'The student grabs the GoPro.'),
+#  (731, 1620, 'The student changes the battery for the GoPro.'),
+#  (1672, 7444, 'The student opens the GoPro.'),
+#  (7496, 7667, 'The student turns on their GoPro.'),
+#  (7685, 7957, 'The student turns off the gopro.'),
+#  (7988, 8604, 'The student assembles the mounting_peg.'),
+#  (8679, 8864, 'The student disassemble the mounting_peg.'),
+#  (8883, 9526, 'The student assemble handheld_grip.'),
+#  (9543, 9896, 'The students disassemble the handheld_grip.')]
 # data['metadata']['depth']: Depth
 # data['metadata']['hands_left']: Hand pose (left)
 # data['metadata']['hands_right']: Hand pose (right)
@@ -109,9 +98,11 @@ data = dataset[0]
 
 ```
 src/
-├── datasets/             # Dataset loaders
+├── datasets/            # Dataset loaders
 │   ├── base.py          # BaseDataset abstract class
+│   ├── agibotworld.py   # AgiBotWorld-Beta (Bimanual manipulation robot manipulation)
 │   ├── egodex.py        # EgoDex (egocentric hand manipulation)
+│   ├── holoassist.py    # HoloAssist (Egocentric human interaction)
 │   └── oxe.py           # Open X-Embodiment (robot manipulation)
 ├── models/              # Model wrappers
 │   ├── molmo.py         # VLM for point extraction

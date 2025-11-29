@@ -102,58 +102,11 @@ class HoloAssistDataset(BaseDataset):
 
         # if no coarse events, fall back to a single segment (whole video)
         if len(coarse_events) == 0:
-            coarse_events = [{
-                "id": -1,
-                "label": "Coarse grained action",
-                "start": 0.0,
-                "end": float(len(frames_full) / max(fps_rgb, 1.0)),
-                "type": "range",
-                "attributes": {
-                    "Action sentence": video_name,
-                    "Verb": "none",
-                    "Adjective": "none",
-                    "Noun": "none",
-                },
-            }]
-
-        # segment descriptions + basic segment metadata
-        segments_meta: List[Dict[str, Any]] = []
-        for e in coarse_events:
-            attr = e.get("attributes", {})
-            segments_meta.append(
-                {
-                    "id": e.get("id"),
-                    "start": float(e.get("start", 0.0)),
-                    "end": float(e.get("end", 0.0)),
-                    "action_sentence": attr.get("Action sentence", ""),
-                    "verb": attr.get("Verb", ""),
-                    "noun": attr.get("Noun", ""),
-                    "adjective": attr.get("Adjective", ""),
-                }
-            )
-
-        # -------- split all modalities using shared helper --------
-        # segment_times = [(start, end), ...]
-        segment_times = [(sm["start"], sm["end"]) for sm in segments_meta]
-
-        frames_segments = self._split_stream_by_times(
-            frames_full, segment_times, fps=fps_rgb
-        )
-        pose_segments = self._split_stream_by_times(
-            pose_full, segment_times, fps=SYNC_FPS_POSE
-        )
-        hl_segments = self._split_stream_by_times(
-            hl_full, segment_times, fps=SYNC_FPS_HANDS
-        )
-        hr_segments = self._split_stream_by_times(
-            hr_full, segment_times, fps=SYNC_FPS_HANDS
-        )
-        depth_segments = self._split_stream_by_times(
-            depth_full, segment_times, fps=SYNC_FPS_DEPTH
-        )
-
-        # per-segment descriptions (Action sentence)
-        descriptions = [sm["action_sentence"] for sm in segments_meta]
+            descriptions = [(0, len(frames_full)-1, video_name)]
+        else:
+            descriptions = [(int(np.floor(e["start"] * fps_rgb)), 
+                             int(np.ceil(e["end"] * fps_rgb)), 
+                             e['attributes']["Action sentence"]) for e in coarse_events]
 
         # extra annotation-level metadata
         meta_extra: Dict[str, Any] = {}
@@ -163,20 +116,19 @@ class HoloAssistDataset(BaseDataset):
             meta_extra["videoMetadata"] = ann.get("videoMetadata")
 
         metadata: Dict[str, Any] = {
-            "segments": segments_meta,
             "fps": float(fps_rgb),
-            "pose_sync": pose_segments,
-            "hands_left": hl_segments,
-            "hands_right": hr_segments,
-            "depth": depth_segments,
+            "pose_sync": pose_full,
+            "hands_left": hl_full,
+            "hands_right": hr_full,
+            "depth": depth_full,
             "events": events,
         }
         metadata.update(meta_extra)
 
         return {
             "video_name": video_name,
-            "frames": frames_segments,      # List[(Ni, H, W, 3)]
-            "description": descriptions,    # List[str]
+            "frames": frames_full,          # np.array
+            "descriptions": descriptions,    # List[Tuple]
             "metadata": metadata,
         }
 
@@ -308,7 +260,7 @@ if __name__ == "__main__":
     print(sample["video_name"])
 
     frames_segments = sample["frames"]          # List[(Ni, H, W, 3)]
-    descs          = sample["description"]      # List[str]
+    descs          = sample["descriptions"]      # List[str]
 
     pose_segments  = sample["metadata"]["pose_sync"]
 
