@@ -142,7 +142,8 @@ def create_demo_video(
     vis_dir: str,
     output_path: str,
     fps: int = 10,
-    first_interaction_frame: int = None
+    first_interaction_frame: int = None,
+    caption: str = None
 ) -> str:
     """Create demo video from visualization frames.
 
@@ -151,6 +152,7 @@ def create_demo_video(
         output_path: Path to save output video
         fps: Frames per second
         first_interaction_frame: Frame index where interaction starts (for annotation)
+        caption: Optional text caption to overlay on video
 
     Returns:
         Path to created video
@@ -176,28 +178,45 @@ def create_demo_video(
         frame_path = os.path.join(vis_dir, frame_file)
         frame = cv2.imread(frame_path)
 
-        # Add frame number and interaction marker
+        # Add overlays
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1.0
+        font_scale = 0.6  # Smaller font to avoid occlusion
         font_thickness = 2
 
-        # Frame number
+        # Caption at the top (if provided)
+        if caption:
+            # Use smaller font for caption
+            caption_font_scale = 0.5
+            caption_thickness = 1
+            caption_size = cv2.getTextSize(caption, font, caption_font_scale, caption_thickness)[0]
+            caption_x = 10
+            caption_y = 20
+
+            # Draw semi-transparent background for caption
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (caption_x - 5, caption_y - caption_size[1] - 5),
+                         (caption_x + caption_size[0] + 5, caption_y + 5), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+            cv2.putText(frame, caption, (caption_x, caption_y), font, caption_font_scale,
+                       (255, 255, 255), caption_thickness)
+
+        # Frame number at bottom-left
         text = f"Frame {idx}"
         text_size = cv2.getTextSize(text, font, font_scale, font_thickness)[0]
         text_x = 10
-        text_y = 40
+        text_y = height - 10
 
         # Draw background rectangle for text
         cv2.rectangle(frame, (text_x - 5, text_y - text_size[1] - 5),
                      (text_x + text_size[0] + 5, text_y + 5), (0, 0, 0), -1)
         cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), font_thickness)
 
-        # Mark interaction frame
+        # Mark interaction frame at bottom
         if first_interaction_frame is not None and idx == first_interaction_frame:
-            text2 = "INTERACTION FRAME"
+            text2 = "INTERACTION"
             text_size2 = cv2.getTextSize(text2, font, font_scale, font_thickness)[0]
-            text2_x = 10
-            text2_y = 80
+            text2_x = text_x + text_size[0] + 20
+            text2_y = height - 10
 
             cv2.rectangle(frame, (text2_x - 5, text2_y - text_size2[1] - 5),
                          (text2_x + text_size2[0] + 5, text2_y + 5), (0, 255, 255), -1)

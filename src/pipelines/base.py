@@ -15,6 +15,43 @@ def load_config(name: str) -> Dict[str, Any]:
     with open(config_path) as f:
         return yaml.safe_load(f) or {}
 
+def load_dataset_from_config(config: Dict[str, Any]):
+    """Load dataset instance from config['dataset'] specification."""
+    from src.datasets import DATASETS
+
+    dataset_config = config.get("dataset", {})
+    dataset_name = dataset_config.get("name")
+
+    if not dataset_name:
+        raise ValueError(
+            "No dataset specified in config. Please set 'dataset.name' in config file.\n"
+            f"Available datasets: {list(DATASETS.keys())}"
+        )
+
+    if dataset_name not in DATASETS:
+        raise ValueError(
+            f"Unknown dataset: '{dataset_name}'. "
+            f"Available datasets: {list(DATASETS.keys())}"
+        )
+
+    # Instantiate dataset
+    dataset_cls = DATASETS[dataset_name]
+    dataset_dir = dataset_config.get("dir")
+
+    if dataset_dir:
+        dataset = dataset_cls(data_dir=dataset_dir)
+    else:
+        dataset = dataset_cls()
+
+    if len(dataset) == 0:
+        raise RuntimeError(
+            f"No data found for dataset '{dataset_name}'. "
+            f"Please check the data directory: {dataset.data_dir}"
+        )
+
+    logging.info(f"Loaded {dataset_name} dataset with {len(dataset)} samples")
+    return dataset
+
 
 class BasePipeline:
     def __init__(self, config: Dict[str, Any]):

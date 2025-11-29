@@ -15,7 +15,7 @@ torchvision.set_video_backend("pyav")
 
 
 class AgiBotWorldDataset(BaseDataset):
-    def __init__(self, data_dir: str = "sample/vla-dataset-samples/AgiBotWorld-Beta"):
+    def __init__(self, data_dir: str = "vla-dataset-samples/AgiBotWorld-Beta"):
         super().__init__(data_dir)
 
     def get_video_names(self) -> List[str]:

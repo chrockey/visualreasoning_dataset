@@ -1,9 +1,11 @@
 from typing import Any, Dict, List, Tuple
 import os
+import gc
 
 import numpy as np
 from PIL import Image, ImageDraw
 import cv2
+import torch
 
 from src.models.gemma import Gemma
 from src.models.grounded_sam2 import GroundedSAM2
@@ -11,7 +13,7 @@ from src.models.molmo import Molmo
 from src.models.sam2 import SAM2
 from src.utils.affordance_type1_utils import mask_to_bbox, find_best_interacting_object, sample_interaction_points, create_demo_video, visualize_affordance, visualize_video_frame
 
-from .base import BasePipeline, load_config
+from .base import BasePipeline, load_config, load_dataset_from_config
 from tqdm import tqdm
 
 
@@ -88,6 +90,11 @@ class AffordanceType1Pipeline(BasePipeline):
             # Reset predictor for next frame
             self.grounded_sam2.reset_predictor()
 
+            # Clean up memory after processing each frame
+            del masks, scores, logits, boxes, labels, vis_img
+            torch.cuda.empty_cache()
+            gc.collect()
+
         return {
             "video_name": data_dict["video_name"],
             "description": description,
@@ -118,6 +125,10 @@ class AffordanceType1Pipeline(BasePipeline):
 
             if len(boxes) == 0:
                 self.grounded_sam2.reset_predictor()
+                # Clean up memory
+                del masks, scores, logits, boxes, labels
+                torch.cuda.empty_cache()
+                gc.collect()
                 continue
 
             # Step 3 : Find first interaction frame and sample interaction points from best object
@@ -137,6 +148,10 @@ class AffordanceType1Pipeline(BasePipeline):
                 break
 
             self.grounded_sam2.reset_predictor()
+            # Clean up memory after processing each frame
+            del masks, scores, logits, boxes, labels
+            torch.cuda.empty_cache()
+            gc.collect()
 
         # Step 4 : Use SAM2 video tracking to propagate part-level segmentation.
         print(f"Propagating segmentation from frame {first_interaction_frame} across entire video...")
@@ -180,9 +195,11 @@ class AffordanceType1Pipeline(BasePipeline):
 
             results.append(frame_result)
 
-        # Create demo video
+        # Create demo video with caption
         video_output_path = os.path.join(vis_dir, "demo_video.mp4")
-        create_demo_video(vis_dir, video_output_path, fps=10, first_interaction_frame=first_interaction_frame)
+        create_demo_video(vis_dir, video_output_path, fps=10,
+                         first_interaction_frame=first_interaction_frame,
+                         caption=description)
 
         return {
             "video_name": data_dict["video_name"],
@@ -193,6 +210,91 @@ class AffordanceType1Pipeline(BasePipeline):
             "results": results
         }
         
+    def _process_segment(
+        self,
+        frames: np.ndarray,
+        segment_idx: int,
+        start_frame: int,
+        end_frame: int,
+        description: str,
+        video_name: str,
+        metadata: Dict[str, Any],
+        dataset_name: str = None
+    ) -> Dict[str, Any]:
+        """Process a single temporal segment.
+
+        Args:
+            frames: Full video frames (N, H, W, 3)
+            segment_idx: Index of this segment
+            start_frame: Start frame (inclusive)
+            end_frame: End frame (inclusive)
+            description: Text description for this segment
+            video_name: Name of the video
+            metadata: Video metadata
+            dataset_name: Name of the dataset (optional, for organizing output)
+
+        Returns:
+            Results dict for this segment
+        """
+        # Slice frames to the segment of interest (end_frame is INCLUSIVE)
+        segment_frames = frames[start_frame:end_frame+1]
+
+        print(f"\nProcessing segment {segment_idx}: [{start_frame}:{end_frame}] (inclusive) with {len(segment_frames)} frames")
+        print(f"Description: {description}")
+
+        # Step 1: Extract main manipulated object using Gemma
+        print(f"Extracting main object from description: {description}")
+        main_object = self.gemma(description).strip()
+        print(f"Detected main object: {main_object}")
+        text_prompt = f"{main_object}. hand. gripper."
+
+        # Create save directory for visualizations
+        save_dir = self.config.get("save_dir", ".")
+
+        # Sanitize video_name: replace "/" with "_" to avoid deep directory nesting
+        sanitized_video_name = video_name.replace("/", "_")
+
+        if dataset_name:
+            vis_dir = os.path.join(save_dir, "visualizations", dataset_name, sanitized_video_name, f"segment_{segment_idx}")
+        else:
+            vis_dir = os.path.join(save_dir, "visualizations", sanitized_video_name, f"segment_{segment_idx}")
+        os.makedirs(vis_dir, exist_ok=True)
+
+        # Save description text file
+        description_path = os.path.join(vis_dir, "description.txt")
+        with open(description_path, 'w') as f:
+            f.write(f"Description: {description}\n")
+            f.write(f"Main Object: {main_object}\n")
+            f.write(f"Segment: {segment_idx}\n")
+            f.write(f"Frame Range: [{start_frame}:{end_frame}] (inclusive)\n")
+
+        # Build data_dict for this segment
+        segment_data_dict = {
+            "video_name": f"{video_name}/segment_{segment_idx}",
+            "metadata": metadata
+        }
+
+        # Process based on mode
+        if self.mode == "image":
+            # IMAGE MODE: Process each frame independently
+            segment_result = self._process_image_mode(
+                segment_frames, description, main_object, text_prompt, vis_dir, segment_data_dict
+            )
+        elif self.mode == "video":
+            # VIDEO MODE: Find interaction frame and propagate
+            segment_result = self._process_video_mode(
+                segment_frames, description, main_object, text_prompt, vis_dir, segment_data_dict
+            )
+
+        # Add segment metadata
+        segment_result.update({
+            "segment_idx": segment_idx,
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+        })
+
+        return segment_result
+
     def process(self, data_dict: Dict[str, Any]):
         """
         Main pipeline for grasp affordance extraction:
@@ -200,44 +302,45 @@ class AffordanceType1Pipeline(BasePipeline):
         2. Detect object and hand/gripper using Grounded SAM2
         3. Find first interaction frame and sample interaction points
         4. Use SAM2 video tracking to propagate part-level segmentation bidirectionally
+
+        Data format:
+        - data_dict['frames']: (N, H, W, 3) whole video
+        - data_dict['descriptions']: List[(start_frame_inclusive, end_frame_inclusive, description_text)]
         """
         frames = data_dict["frames"]  # (N, H, W, 3)
-        description = data_dict['description']
+        descriptions = data_dict['descriptions']  # List[(start, end, text)]
+        video_name = data_dict["video_name"]
+        metadata = data_dict.get("metadata", {})
 
-        # Step 1: Extract main manipulated object using Gemma
-        print(f"Extracting main object from description: {description}")
-        main_object = self.gemma(description).strip()
-        print(f"Detected main object: {main_object}")
-        text_prompt = f"{main_object}. hand. gripper."
-        
-        # Create save directory for visualizations
-        save_dir = self.config.get("save_dir", ".")
-        vis_dir = os.path.join(save_dir, "visualizations", data_dict["video_name"])
-        os.makedirs(vis_dir, exist_ok=True)
+        # Get dataset name from config
+        dataset_name = self.config.get("dataset", {}).get("name", None)
 
-        results = []
-        if self.mode == "image":
-            # IMAGE MODE: Process each frame independently
-            return self._process_image_mode(frames, description, main_object, text_prompt, vis_dir, data_dict)
-        elif self.mode == "video":
-            # VIDEO MODE: Find interaction frame and propagate
-            return self._process_video_mode(frames, description, main_object, text_prompt, vis_dir, data_dict)
+        print(f"Processing video: {video_name}")
+        print(f"Total segments: {len(descriptions)}")
+
+        # Process all segments
+        all_segments = []
+        for segment_idx, (start_frame, end_frame, description) in enumerate(descriptions):
+            segment_result = self._process_segment(
+                frames, segment_idx, start_frame, end_frame,
+                description, video_name, metadata, dataset_name
+            )
+            all_segments.append(segment_result)
+
+        # Return aggregated results
+        return {
+            "video_name": video_name,
+            "metadata": metadata,
+            "num_segments": len(all_segments),
+            "segments": all_segments
+        }
 
 
 if __name__ == "__main__":
     import argparse
-    from src.datasets.egodex import EgoDexDataset
-    from src.datasets.agibotworld import AgiBotWorldDataset
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Test AffordanceType1 pipeline")
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        choices=["egodex", "agibotworld"],
-        default="egodex",
-        help="Dataset to use for testing (default: egodex)"
-    )
     parser.add_argument(
         "--index",
         type=int,
@@ -245,65 +348,64 @@ if __name__ == "__main__":
         help="Index of video to process (default: 0)"
     )
     parser.add_argument(
-        "--action-index",
+        "-s", "--segment-index",
         type=int,
-        default=0,
-        help="For AgiBotWorld: index of action to process (default: 0)"
+        default=None,
+        help="Process only a specific segment index. If not provided, processes all segments (default: None)"
+    )
+    parser.add_argument(
+        "-d", "--dataset-name",
+        type=str,
+        default=None,
+        help="Override dataset name from config (e.g., egodex, oxe, agibotworld, holoassist)"
+    )
+    parser.add_argument(
+        "--dataset-dir",
+        type=str,
+        default=None,
+        help="Override dataset directory from config"
     )
     args = parser.parse_args()
 
     # Load pipeline configuration and create pipeline
     config = load_config("affordance_type1")
+
+    # Override dataset config if arguments provided
+    if args.dataset_name is not None:
+        if "dataset" not in config:
+            config["dataset"] = {}
+        config["dataset"]["name"] = args.dataset_name
+
+    if args.dataset_dir is not None:
+        if "dataset" not in config:
+            config["dataset"] = {}
+        config["dataset"]["dir"] = args.dataset_dir
+
     pipeline = AffordanceType1Pipeline(config)
 
-    # Load dataset based on argument
-    if args.dataset == "egodex":
-        print("Loading EgoDex dataset...")
-        dataset = EgoDexDataset()
-        if len(dataset) == 0:
-            print("No EgoDex data found. Please check data directory.")
+    # Load dataset from config
+    print("Loading dataset from config...")
+    dataset = load_dataset_from_config(config)
+
+    # Get video sample
+    data_dict = dataset[args.index]
+    print(f"Testing pipeline with video: {data_dict['video_name']}")
+    print(f"Frames shape: {data_dict['frames'].shape}")
+    print(f"Total segments: {len(data_dict['descriptions'])}")
+    print(f"Descriptions: {data_dict['descriptions']}")
+
+    # Filter to specific segment if requested
+    if args.segment_index is not None:
+        if args.segment_index >= len(data_dict['descriptions']):
+            print(f"Error: Segment index {args.segment_index} out of range (0-{len(data_dict['descriptions'])-1})")
             exit(1)
 
-        # Get video sample
-        data_dict = dataset[args.index]
-        print(f"Testing pipeline with video: {data_dict['video_name']}")
-        print(f"Description: {data_dict['description']}")
-        print(f"Frames shape: {data_dict['frames'].shape}")
+        print(f"\nProcessing only segment {args.segment_index}")
+        # Keep only the selected segment
+        data_dict['descriptions'] = [data_dict['descriptions'][args.segment_index]]
 
-        # Run pipeline
-        print("\nRunning affordance type2 pipeline...")
-        results = pipeline(data_dict, save_dir=".")
+    # Run pipeline
+    print("\nRunning affordance type1 pipeline...")
+    results = pipeline(data_dict, save_dir=".")
 
-    elif args.dataset == "agibotworld":
-        print("Loading AgiBotWorld dataset...")
-        dataset = AgiBotWorldDataset()
-        if len(dataset) == 0:
-            print("No AgiBotWorld data found. Please check data directory.")
-            exit(1)
-
-        # Get video sample (contains multiple actions)
-        sample = dataset[args.index]
-        print(f"Testing pipeline with video: {sample['video_name']}")
-        print(f"Total actions in video: {len(sample['frames'])}")
-
-        # Select specific action
-        action_idx = args.action_index
-        if action_idx >= len(sample['frames']):
-            print(f"Action index {action_idx} out of range. Using action 0.")
-            action_idx = 0
-
-        # Prepare data dict for pipeline (AgiBotWorld has per-action frames)
-        data_dict = {
-            "video_name": f"{sample['video_name']}_action{action_idx}",
-            "frames": sample['frames'][action_idx],  # Get frames for specific action
-            "description": sample['description'][action_idx],  # Get description for specific action
-            "metadata": sample['metadata']
-        }
-
-        print(f"\nProcessing action {action_idx}:")
-        print(f"Description: {data_dict['description']}")
-        print(f"Frames shape: {data_dict['frames'].shape}")
-
-        # Run pipeline
-        print("\nRunning affordance type2 pipeline...")
-        results = pipeline(data_dict, save_dir=".")
+    # TODO: Resolve Out-of-memory error when processing too long videos

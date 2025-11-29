@@ -1,6 +1,10 @@
 # AffordanceType1Pipeline Configuration
 mode: video  # 'image' or 'video' mode for processing
 
+dataset:
+  name: egodex  # one of: egodex, oxe, agibotworld, holoassist
+  dir: ""  # Empty string uses dataset's default directory
+
 gemma:
   model_id: google/gemma-2-2b-it  # Model for extracting main manipulated object
 
