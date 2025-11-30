@@ -141,25 +141,26 @@ class SAM2:
 
     @torch.inference_mode()
     @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    def video_inference(self, video_frames: np.ndarray, points: np.ndarray, points_frame_idx: int = 0):
+    def video_inference(self, video_frames: np.ndarray, points: np.ndarray, points_frame_idx: int = 0, reverse: bool = False):
         """Video segmentation using SAM2 video predictor.
         
         Args:
             video_frames: Array of shape (N, H, W, 3) - video frames
             points: Array of shape (num_points, 2) - points
             points_frame_idx: Index of the frame to add prompts (default: 0)
+            reverse: Whether to use reverse propagation (default: False)
         
         Returns:
-            List of masks for each frame
+            Dictionary of masks for each frame
         """
         # Initialize video state
         state = self.sam_wrapper.init_state(video_frames)
         
-        # Add points to the first frame
+        # Add points to the specified frame
         point_coords = points
         point_labels = np.ones(len(points))
         
-        # Add new points to first frame
+        # Add new points
         frame_idx, object_ids, masks = self.sam_wrapper.base.add_new_points_or_box(
             state,
             frame_idx=points_frame_idx,
@@ -167,9 +168,9 @@ class SAM2:
             points=point_coords,
             labels=point_labels,
         )
-        # Propagate through entire video
+        # Propagate through video with reverse option
         video_segments = {}
-        for frame_idx, object_ids, masks in  self.sam_wrapper.base.propagate_in_video(state):
+        for frame_idx, object_ids, masks in self.sam_wrapper.base.propagate_in_video(state, reverse=reverse):
             video_segments[frame_idx] = (masks[0] > 0.0).cpu().numpy()
         return video_segments
 
@@ -192,14 +193,23 @@ class SAM2:
         masks = logits > 0
         return masks, scores, logits
 
-    def __call__(self, frames, points, points_frame_index: Optional[int] = None):
-        """Unified interface for both image and video segmentation."""
+    def __call__(self, frames, points, points_frame_index: Optional[int] = None, reverse: bool = False, start_frame: Optional[int] = None, end_frame: Optional[int] = None):
+        """Unified interface for both image and video segmentation.
+        
+        Args:
+            frames: Input frames
+            points: Input points
+            points_frame_index: Frame index where points are located
+            reverse: Whether to use reverse propagation (backward from points_frame_index)
+            start_frame: Start frame for propagation (only used with reverse=True)
+            end_frame: End frame for propagation (only used with reverse=True)
+        """
         if self.mode == "image":
             # Single image mode - original functionality
             return self._process_single_image(frames, points)
         elif self.mode == "video":
-            # Video mode - use first frame points and propagate
-            return self._process_video(frames, points, points_frame_index)
+            # Video mode - use points and propagate
+            return self._process_video(frames, points, points_frame_index, reverse, start_frame, end_frame)
     
     def _process_single_image(self, image: np.ndarray, points: np.ndarray):
         """Process single image - original functionality."""
@@ -227,13 +237,38 @@ class SAM2:
             logit = logits[arange, idx]
         return mask, score, logit
     
-    def _process_video(self, video_frames: np.ndarray, points: np.ndarray, points_frame_index):
-        """Process video frames using first frame points."""
+    def _process_video(self, video_frames: np.ndarray, points: np.ndarray, points_frame_index, reverse: bool = False, start_frame: Optional[int] = None, end_frame: Optional[int] = None):
+        """Process video frames using points and propagation.
+        
+        Args:
+            video_frames: Input video frames
+            points: Input points
+            points_frame_index: Frame index where points are located
+            reverse: Whether to use reverse propagation
+            start_frame: Start frame for propagation range
+            end_frame: End frame for propagation range
+        """
         if points is None or len(points) == 0:
-            return [None] * len(video_frames)
-        # Get masks for all frames
-        video_segments = self.video_inference(video_frames, points, points_frame_index)
-        return video_segments
+            return {}
+            
+        if reverse:
+            # Extract segment frames for reverse propagation
+            segment_frames = video_frames[start_frame:end_frame+1]
+            adjusted_points_frame_idx = points_frame_index - start_frame
+            
+            # Run video inference on segment with reverse=True
+            segment_results = self.video_inference(segment_frames, points, adjusted_points_frame_idx, reverse=True)
+            
+            # Map results back to original frame indices
+            final_results = {}
+            for seg_idx, mask in segment_results.items():
+                original_idx = start_frame + seg_idx
+                final_results[original_idx] = mask
+            
+            return final_results
+        else:
+            # Normal mode: propagate forward from points_frame_index
+            return self.video_inference(video_frames, points, points_frame_index, reverse=False)
 
 
 if __name__ == "__main__":

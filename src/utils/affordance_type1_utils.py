@@ -46,7 +46,7 @@ def find_best_interacting_object(
     masks: np.ndarray,
     boxes: np.ndarray,
     labels: List[str]
-) -> Tuple[int, List[int], List[int], float]:
+) -> Tuple[Dict[str, int], List[int], Dict[str, List[int]], Dict[str, float]]:
     """Find the object with maximum overlap with hand/gripper.
 
     Args:
@@ -55,11 +55,11 @@ def find_best_interacting_object(
         labels: List of labels for each detection
 
     Returns:
-        Tuple of (best_object_idx, object_indices, hand_gripper_indices, max_overlap):
-            - best_object_idx: Index of object with maximum overlap with hand/gripper (or None)
+        Tuple of (best_objects, object_indices, hand_gripper_indices, overlaps):
+            - best_objects: Dict with keys 'left', 'right' containing best object index for each hand (or None)
             - object_indices: List of indices for all detected objects
-            - hand_gripper_indices: List of indices for all detected hands/grippers
-            - max_overlap: Maximum overlap area in pixels
+            - hand_gripper_indices: Dict with keys 'left', 'right', 'all' containing hand/gripper indices
+            - overlaps: Dict with keys 'left', 'right' containing max overlap for each hand
     """
     # Find object and hand/gripper indices
     object_indices = []
@@ -74,24 +74,64 @@ def find_best_interacting_object(
         else:
             object_indices.append(idx)
 
-    # Check for overlap
-    best_object_idx = None
-    max_overlap = 0.0
+    # Distinguish left and right hands/grippers based on x-coordinate of bounding box center
+    left_idx = None
+    right_idx = None
+    
+    if len(hand_gripper_indices) == 2:
+        # Sort hands/grippers by x-coordinate of bbox center
+        hg_centers = []
+        for idx in hand_gripper_indices:
+            x1, y1, x2, y2 = boxes[idx]
+            center_x = (x1 + x2) / 2
+            hg_centers.append((center_x, idx))
+        
+        hg_centers.sort(key=lambda x: x[0])  # Sort by x-coordinate
+        
+        # Assign leftmost as left, rightmost as right
+        left_idx = hg_centers[0][1]  # leftmost
+        right_idx = hg_centers[1][1]  # rightmost
+    elif len(hand_gripper_indices) == 1:
+        # If only one hand/gripper, assign to left by default
+        idx = hand_gripper_indices[0]
+        # Fallback to position-based detection
+        x1, y1, x2, y2 = boxes[idx]
+        center_x = (x1 + x2) / 2
+        img_center_x = masks.shape[2] / 2
+        if center_x < img_center_x:
+            left_idx = idx
+        else:
+            right_idx = idx
+    
+    # Create structured output
+    structured_indices = {
+        'left': left_idx,
+        'right': right_idx,
+        'all': hand_gripper_indices
+    }
 
-    if len(object_indices) > 0 and len(hand_gripper_indices) > 0:
-        # Combine hand/gripper masks
-        combined_hg_mask = np.zeros_like(masks[0], dtype=bool)
-        for hg_idx in hand_gripper_indices:
-            combined_hg_mask = np.logical_or(combined_hg_mask, masks[hg_idx])
+    # Find best object for each hand separately
+    best_objects = {'left': None, 'right': None}
+    overlaps = {'left': 0.0, 'right': 0.0}
+    
+    for hand_type in ['left', 'right']:
+        hand_idx = structured_indices[hand_type]
+        
+        if hand_idx is not None and len(object_indices) > 0:
+            # Find object with maximum overlap for this hand
+            max_overlap_for_hand = 0.0
+            best_object_idx_for_hand = None
+                
+            for obj_idx in object_indices:
+                overlap = compute_overlap(boxes[obj_idx], masks[hand_idx])
+                if overlap > max_overlap_for_hand:
+                    max_overlap_for_hand = overlap
+                    best_object_idx_for_hand = obj_idx
+                    
+            best_objects[hand_type] = best_object_idx_for_hand
+            overlaps[hand_type] = max_overlap_for_hand
 
-        # Find object with maximum overlap
-        for obj_idx in object_indices:
-            overlap = compute_overlap(boxes[obj_idx], combined_hg_mask)
-            if overlap > max_overlap:
-                max_overlap = overlap
-                best_object_idx = obj_idx
-
-    return best_object_idx, object_indices, hand_gripper_indices, max_overlap
+    return best_objects, object_indices, structured_indices, overlaps
 
 
 def sample_interaction_points(
@@ -142,7 +182,6 @@ def create_demo_video(
     vis_dir: str,
     output_path: str,
     fps: int = 10,
-    first_interaction_frame: int = None,
     caption: str = None
 ) -> str:
     """Create demo video from visualization frames.
@@ -151,7 +190,6 @@ def create_demo_video(
         vis_dir: Directory containing frame_XXXX.png files
         output_path: Path to save output video
         fps: Frames per second
-        first_interaction_frame: Frame index where interaction starts (for annotation)
         caption: Optional text caption to overlay on video
 
     Returns:
@@ -162,12 +200,9 @@ def create_demo_video(
 
     if len(frame_files) == 0:
         raise ValueError(f"No frame files found in {vis_dir}")
-
-    # Read first frame to get dimensions
-    first_frame_path = os.path.join(vis_dir, frame_files[0])
-    first_img = cv2.imread(first_frame_path)
-    height, width, _ = first_img.shape
-
+    
+    sample_frame = cv2.imread(os.path.join(vis_dir, frame_files[0]))
+    height, width, _ = sample_frame.shape
     # Create video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
@@ -177,7 +212,6 @@ def create_demo_video(
     for idx, frame_file in enumerate(frame_files):
         frame_path = os.path.join(vis_dir, frame_file)
         frame = cv2.imread(frame_path)
-
         # Add overlays
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.6  # Smaller font to avoid occlusion
@@ -210,18 +244,6 @@ def create_demo_video(
         cv2.rectangle(frame, (text_x - 5, text_y - text_size[1] - 5),
                      (text_x + text_size[0] + 5, text_y + 5), (0, 0, 0), -1)
         cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), font_thickness)
-
-        # Mark interaction frame at bottom
-        if first_interaction_frame is not None and idx == first_interaction_frame:
-            text2 = "INTERACTION"
-            text_size2 = cv2.getTextSize(text2, font, font_scale, font_thickness)[0]
-            text2_x = text_x + text_size[0] + 20
-            text2_y = height - 10
-
-            cv2.rectangle(frame, (text2_x - 5, text2_y - text_size2[1] - 5),
-                         (text2_x + text_size2[0] + 5, text2_y + 5), (0, 255, 255), -1)
-            cv2.putText(frame, text2, (text2_x, text2_y), font, font_scale, (0, 0, 0), font_thickness)
-
         video_writer.write(frame)
 
     video_writer.release()
@@ -275,6 +297,11 @@ def visualize_affordance(
         if is_hand_or_gripper:
             # Draw mask for hand/gripper
             color = hand_color if 'hand' in label_lower else gripper_color
+            
+            # Ensure mask is 2D
+            if mask.ndim > 2:
+                mask = mask.squeeze()
+                
             mask_img = Image.new("RGBA", vis_img.size, (0, 0, 0, 0))
             mask_pixels = mask_img.load()
 
@@ -343,6 +370,10 @@ def visualize_video_frame(
 
     # Draw mask if provided
     if mask is not None:
+        # Ensure mask is 2D
+        if mask.ndim > 2:
+            mask = mask.squeeze()
+        
         # Create semi-transparent overlay
         overlay = Image.new("RGBA", vis_img.size, (0, 0, 0, 0))
 
