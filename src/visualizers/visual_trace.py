@@ -1,5 +1,6 @@
 from collections import defaultdict
 from typing import Dict, List, Optional
+from pathlib import Path
 import numpy as np
 import torch
 import os
@@ -47,6 +48,7 @@ class VisualTraceVisualizer:
         mode: str = "rainbow",  # 'cool', 'optical_flow'
         linewidth: int = 1,
         tracks_leave_trace: int = 0,  # -1 for infinite
+        save_images: bool = True,  # Whether to save individual frame images
     ):
         self.mode = mode
         self.save_dir = save_dir
@@ -57,6 +59,7 @@ class VisualTraceVisualizer:
         self.tracks_leave_trace = tracks_leave_trace
         self.linewidth = linewidth
         self.fps = fps
+        self.save_images = save_images
         self._video_buffers: Dict[str, List[torch.Tensor]] = defaultdict(list)
 
     def _generate_rainbow_palette(self, num_points: int) -> np.ndarray:
@@ -75,11 +78,23 @@ class VisualTraceVisualizer:
         video_name: str = "visual_trace",
         frame_idx: Optional[int] = None,
         finalize: bool = False,
+        subdir: Optional[str] = None,
     ):
         """Save single-frame visualizations and accumulate frames for video export."""
-        os.makedirs(self.save_dir, exist_ok=True)
-        base_path = os.path.join(self.save_dir, video_name)
+        # Create hierarchical directory structure if subdir is provided
+        if subdir:
+            base_path = os.path.join(self.save_dir, subdir)
+        else:
+            base_path = os.path.join(self.save_dir, video_name)
         os.makedirs(base_path, exist_ok=True)
+        
+        # Create images subdirectories
+        if self.save_images:
+            keypoints_path = os.path.join(base_path, "images", "keypoints")
+            mask_path = os.path.join(base_path, "images", "mask")
+            os.makedirs(keypoints_path, exist_ok=True)
+            os.makedirs(mask_path, exist_ok=True)
+        
         frame_tag = f"{frame_idx:05d}_" if frame_idx is not None else ""
         prefix_tag = f"{prefix}_" if prefix else ""
 
@@ -95,10 +110,24 @@ class VisualTraceVisualizer:
         if image_to_save.dtype != np.uint8:
             image_to_save = np.clip(image_to_save, 0, 255).astype(np.uint8)
 
-        # Save the raw input frame for quick inspection
-        Image.fromarray(image_to_save).save(
-            os.path.join(base_path, f"{frame_tag}{prefix_tag}pre_image.png")
-        )
+        # Save mask overlay image (if enabled)
+        if self.save_images and mask is not None:
+            mask_array = (
+                mask.detach().cpu().numpy()
+                if isinstance(mask, torch.Tensor)
+                else np.asarray(mask)
+            )
+            if mask_array.ndim == 2:
+                # Create mask overlay
+                overlay = image_to_save.copy()
+                if mask_array.dtype != bool:
+                    mask_bool = mask_array.astype(bool)
+                else:
+                    mask_bool = mask_array
+                overlay[mask_bool] = (overlay[mask_bool] * 0.5 + np.array([255, 0, 0]) * 0.5).astype(np.uint8)
+                Image.fromarray(overlay).save(
+                    os.path.join(mask_path, f"{frame_tag}{prefix_tag}mask_overlay.png")
+                )
 
         # Prepare tensors for visualization helpers
         video_tensor = (
@@ -158,9 +187,10 @@ class VisualTraceVisualizer:
         )
         rendered = rendered.detach().cpu()
         annotated_frame = rendered[0, 0].permute(1, 2, 0).numpy().astype(np.uint8)
-        Image.fromarray(annotated_frame).save(
-            os.path.join(base_path, f"{frame_tag}{prefix_tag}keypoints.png")
-        )
+        if self.save_images:
+            Image.fromarray(annotated_frame).save(
+                os.path.join(keypoints_path, f"{frame_tag}{prefix_tag}keypoints.png")
+            )
 
         frame_tensor = (
             torch.from_numpy(annotated_frame)
@@ -172,7 +202,7 @@ class VisualTraceVisualizer:
         self._video_buffers[video_name].append(frame_tensor)
         if finalize and self._video_buffers[video_name]:
             full_video = torch.cat(self._video_buffers[video_name], dim=1)
-            self.save_video(full_video, filename=video_name)
+            self.save_video(full_video, filename=video_name, subdir=subdir)
             self._video_buffers.pop(video_name, None)
 
     def save_trace_video(
@@ -184,6 +214,7 @@ class VisualTraceVisualizer:
         start_frame_idx: int = 0,
         end_frame_idx: Optional[int] = None,
         leave_trace: bool = True,
+        subdir: Optional[str] = None,
     ):
         frames_array = (
             frames.detach().cpu().numpy() if isinstance(frames, torch.Tensor) else np.asarray(frames)
@@ -247,9 +278,9 @@ class VisualTraceVisualizer:
             ),
         )
         rendered = rendered.detach().cpu().to(torch.uint8)
-        self.save_video(rendered, filename=video_name)
+        self.save_video(rendered, filename=video_name, subdir=subdir)
 
-    def save_video(self, video, filename, writer=None, step=0):
+    def save_video(self, video, filename, writer=None, step=0, subdir: Optional[str] = None):
         if writer is not None:
             writer.add_video(
                 filename,
@@ -258,11 +289,16 @@ class VisualTraceVisualizer:
                 fps=self.fps,
             )
         else:
-            os.makedirs(self.save_dir, exist_ok=True)
+            # Create hierarchical directory structure if subdir is provided
+            if subdir:
+                save_dir = os.path.join(self.save_dir, subdir)
+            else:
+                save_dir = self.save_dir
+            os.makedirs(save_dir, exist_ok=True)
             wide_list = [wide[0].permute(1, 2, 0).cpu().numpy() for wide in video.unbind(1)]
 
-            # Prepare the video file path (store next to frame directory)
-            save_path = os.path.join(self.save_dir, f"{filename}.mp4")
+            # Prepare the video file path
+            save_path = os.path.join(save_dir, f"{filename}.mp4")
 
             # Create a writer object
             video_writer = imageio.get_writer(save_path, fps=self.fps)
@@ -425,3 +461,163 @@ class VisualTraceVisualizer:
                 )
         rgb = np.array(rgb)
         return rgb
+    
+    def visualize_tracked_clip(
+        self,
+        clip_idx: int,
+        str_idx: int,
+        end_idx: int,
+        task_prompt: str,
+        word: str,
+        masks: np.ndarray,
+        scores: np.ndarray,
+        logits: np.ndarray,
+        boxes: np.ndarray,
+        keypoints: np.ndarray,
+        tracked_keypoints: torch.Tensor,
+        tracked_visibility: torch.Tensor,
+        video_frames: np.ndarray,
+        point_to_mask: np.ndarray,
+        global_frames_array: Optional[np.ndarray] = None,
+        data_name: Optional[str] = None,
+    ) -> np.ndarray:
+        """Visualize tracked keypoints for a clip and return updated global_frames_array."""
+        # Create base hierarchical directory structure
+        if data_name:
+            base_subdir = f"{data_name}/clip_{clip_idx:04d}"
+        else:
+            base_subdir = f"clip_{clip_idx:04d}"
+        
+        # Save video info at clip level
+        info_dir = os.path.join(self.save_dir, base_subdir)
+        os.makedirs(info_dir, exist_ok=True)
+        info_path = os.path.join(info_dir, "video_info.txt")
+        info_content = [
+            f"video_index: {clip_idx}",
+            f"start_frame: {str_idx}",
+            f"end_frame: {end_idx}",
+            f"task_prompt: {task_prompt}",
+        ]
+        with open(info_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(info_content))
+
+        print(task_prompt)
+        print(word)
+        print(masks.shape, scores.shape, logits.shape, boxes.shape)
+        num_masks, points_per_mask = keypoints.shape[:2]
+        print(f"Keypoints shape: {keypoints.shape}")
+        print(f"Keypoints for first mask: {keypoints[0]}")
+        print(
+            f"Total tracked points: {tracked_keypoints.shape[2]} across {num_masks} masks"
+        )
+
+        track_sequence = tracked_keypoints[0]
+        if hasattr(track_sequence, "detach"):
+            track_sequence = track_sequence.detach().cpu().numpy()
+        local_end_frame = max(end_idx - str_idx - 1, 0)
+        segment_start_label = str_idx
+        segment_end_label = end_idx - 1
+
+        # prev_global_len = 0 if global_frames_array is None else global_frames_array.shape[0]
+        # assert prev_global_len == str_idx, (
+        #     f"Global frame buffer mismatch: expected {str_idx}, got {prev_global_len}"
+        # )
+        if global_frames_array is None:
+            # frames_until_now = video_frames[str_idx:end_idx].copy()
+            frames_until_now = video_frames[:end_idx].copy()
+        else:
+            frames_until_now = np.concatenate([global_frames_array, video_frames[str_idx:end_idx]], axis=0)
+        
+        for mask_idx in range(num_masks):
+            mask_point_indices = np.where(point_to_mask == mask_idx)[0]
+            if mask_point_indices.size == 0:
+                continue
+            mask_point_list = mask_point_indices.tolist()
+
+            base_video_name = f"clip_{clip_idx:04d}_mask_{mask_idx:02d}"
+            mask_array = masks[mask_idx]
+            
+            # Create hierarchical subdirectory: data_name/clip_idx/mask_idx/
+            if data_name:
+                subdir = f"{data_name}/clip_{clip_idx:04d}/mask_{mask_idx:02d}"
+            else:
+                subdir = f"clip_{clip_idx:04d}/mask_{mask_idx:02d}"
+            
+            for frame_offset, frame in enumerate(video_frames[str_idx:end_idx]):
+                keypoints_frame = track_sequence[frame_offset, mask_point_list]
+                self.save_visualizations(
+                    frame,
+                    mask_array,
+                    keypoints_frame,
+                    video_name=base_video_name,
+                    frame_idx=str_idx + frame_offset,
+                    finalize=frame_offset == len(video_frames[str_idx:end_idx]) - 1,
+                    subdir=subdir,
+                )
+            points_segment_name = (
+                f"points_{segment_start_label:05d}_{segment_end_label:05d}"
+            )
+            self.save_trace_video(
+                video_frames[str_idx:end_idx],
+                track_sequence[:, mask_point_list],
+                video_name=points_segment_name,
+                mask=mask_array,
+                start_frame_idx=0,
+                end_frame_idx=local_end_frame,
+                leave_trace=False,
+                subdir=subdir,
+            )
+
+            trace_segment_name = (
+                f"trace_{segment_start_label:05d}_{segment_end_label:05d}"
+            )
+            self.save_trace_video(
+                video_frames[str_idx:end_idx],
+                track_sequence[:, mask_point_list],
+                video_name=trace_segment_name,
+                mask=mask_array,
+                start_frame_idx=0,
+                end_frame_idx=local_end_frame,
+                leave_trace=True,
+                subdir=subdir,
+            )
+
+            zero_tracks = np.zeros(
+                (frames_until_now.shape[0], len(mask_point_list), 2),
+                dtype=track_sequence.dtype,
+            )
+            mask_tracks = track_sequence[:, mask_point_list]
+            zero_tracks[str_idx:end_idx] = mask_tracks
+            if str_idx > 0:
+                zero_tracks[:str_idx] = mask_tracks[0]
+
+            points_zero_name = (
+                f"points_zero_{segment_end_label:05d}"
+            )
+            self.save_trace_video(
+                frames_until_now,
+                zero_tracks,
+                video_name=points_zero_name,
+                mask=mask_array,
+                start_frame_idx=str_idx,
+                end_frame_idx=segment_end_label,
+                leave_trace=False,
+                subdir=subdir,
+            )
+
+            trace_zero_name = (
+                f"trace_zero_{segment_end_label:05d}"
+            )
+            self.save_trace_video(
+                frames_until_now,
+                zero_tracks,
+                video_name=trace_zero_name,
+                mask=mask_array,
+                start_frame_idx=str_idx,
+                end_frame_idx=segment_end_label,
+                leave_trace=True,
+                subdir=subdir,
+            )
+        
+        print(tracked_keypoints.shape, tracked_visibility.shape)
+        return frames_until_now
