@@ -49,6 +49,7 @@ class VisualTraceVisualizer:
         linewidth: int = 1,
         tracks_leave_trace: int = 0,  # -1 for infinite
         save_images: bool = True,  # Whether to save individual frame images
+        save_per_mask: bool = True,  # Whether to save per-mask videos (also enables all keypoints video)
     ):
         self.mode = mode
         self.save_dir = save_dir
@@ -60,6 +61,7 @@ class VisualTraceVisualizer:
         self.linewidth = linewidth
         self.fps = fps
         self.save_images = save_images
+        self.save_per_mask = save_per_mask
         self._video_buffers: Dict[str, List[torch.Tensor]] = defaultdict(list)
 
     def _generate_rainbow_palette(self, num_points: int) -> np.ndarray:
@@ -528,96 +530,168 @@ class VisualTraceVisualizer:
         else:
             frames_until_now = np.concatenate([global_frames_array, video_frames[str_idx:end_idx]], axis=0)
         
-        for mask_idx in range(num_masks):
-            mask_point_indices = np.where(point_to_mask == mask_idx)[0]
-            if mask_point_indices.size == 0:
-                continue
-            mask_point_list = mask_point_indices.tolist()
+        # Save per-mask videos if enabled
+        if self.save_per_mask:
+            for mask_idx in range(num_masks):
+                mask_point_indices = np.where(point_to_mask == mask_idx)[0]
+                if mask_point_indices.size == 0:
+                    continue
+                mask_point_list = mask_point_indices.tolist()
 
-            base_video_name = f"clip_{clip_idx:04d}_mask_{mask_idx:02d}"
-            mask_array = masks[mask_idx]
-            
-            # Create hierarchical subdirectory: data_name/clip_idx/mask_idx/
-            if data_name:
-                subdir = f"{data_name}/clip_{clip_idx:04d}/mask_{mask_idx:02d}"
-            else:
-                subdir = f"clip_{clip_idx:04d}/mask_{mask_idx:02d}"
-            
-            for frame_offset, frame in enumerate(video_frames[str_idx:end_idx]):
-                keypoints_frame = track_sequence[frame_offset, mask_point_list]
-                self.save_visualizations(
-                    frame,
-                    mask_array,
-                    keypoints_frame,
-                    video_name=base_video_name,
-                    frame_idx=str_idx + frame_offset,
-                    finalize=frame_offset == len(video_frames[str_idx:end_idx]) - 1,
+                base_video_name = f"clip_{clip_idx:04d}_mask_{mask_idx:02d}"
+                mask_array = masks[mask_idx]
+
+                # Create hierarchical subdirectory: data_name/clip_idx/mask_idx/
+                if data_name:
+                    subdir = f"{data_name}/clip_{clip_idx:04d}/mask_{mask_idx:02d}"
+                else:
+                    subdir = f"clip_{clip_idx:04d}/mask_{mask_idx:02d}"
+
+                for frame_offset, frame in enumerate(video_frames[str_idx:end_idx]):
+                    keypoints_frame = track_sequence[frame_offset, mask_point_list]
+                    self.save_visualizations(
+                        frame,
+                        mask_array,
+                        keypoints_frame,
+                        video_name=base_video_name,
+                        frame_idx=str_idx + frame_offset,
+                        finalize=frame_offset == len(video_frames[str_idx:end_idx]) - 1,
+                        subdir=subdir,
+                    )
+                points_segment_name = (
+                    f"points_{segment_start_label:05d}_{segment_end_label:05d}"
+                )
+                self.save_trace_video(
+                    video_frames[str_idx:end_idx],
+                    track_sequence[:, mask_point_list],
+                    video_name=points_segment_name,
+                    mask=mask_array,
+                    start_frame_idx=0,
+                    end_frame_idx=local_end_frame,
+                    leave_trace=False,
                     subdir=subdir,
                 )
-            points_segment_name = (
-                f"points_{segment_start_label:05d}_{segment_end_label:05d}"
-            )
+
+                trace_segment_name = (
+                    f"trace_{segment_start_label:05d}_{segment_end_label:05d}"
+                )
+                self.save_trace_video(
+                    video_frames[str_idx:end_idx],
+                    track_sequence[:, mask_point_list],
+                    video_name=trace_segment_name,
+                    mask=mask_array,
+                    start_frame_idx=0,
+                    end_frame_idx=local_end_frame,
+                    leave_trace=True,
+                    subdir=subdir,
+                )
+
+                zero_tracks = np.zeros(
+                    (frames_until_now.shape[0], len(mask_point_list), 2),
+                    dtype=track_sequence.dtype,
+                )
+                mask_tracks = track_sequence[:, mask_point_list]
+                zero_tracks[str_idx:end_idx] = mask_tracks
+                if str_idx > 0:
+                    zero_tracks[:str_idx] = mask_tracks[0]
+
+                points_zero_name = (
+                    f"points_zero_{segment_end_label:05d}"
+                )
+                self.save_trace_video(
+                    frames_until_now,
+                    zero_tracks,
+                    video_name=points_zero_name,
+                    mask=mask_array,
+                    start_frame_idx=str_idx,
+                    end_frame_idx=segment_end_label,
+                    leave_trace=False,
+                    subdir=subdir,
+                )
+
+                trace_zero_name = (
+                    f"trace_zero_{segment_end_label:05d}"
+                )
+                self.save_trace_video(
+                    frames_until_now,
+                    zero_tracks,
+                    video_name=trace_zero_name,
+                    mask=mask_array,
+                    start_frame_idx=str_idx,
+                    end_frame_idx=segment_end_label,
+                    leave_trace=True,
+                    subdir=subdir,
+                )
+
+        # Save all keypoints in one video (only when save_per_mask is False)
+        else:
+            # Create subdirectory for all keypoints: data_name/clip_idx/all_keypoints/
+            if data_name:
+                all_kp_subdir = f"{data_name}/clip_{clip_idx:04d}/all_keypoints"
+            else:
+                all_kp_subdir = f"clip_{clip_idx:04d}/all_keypoints"
+
+            # All keypoints for this clip (no mask separation)
+            all_keypoint_indices = list(range(track_sequence.shape[1]))
+
+            # Save clip segment videos (without global frames)
+            all_points_segment_name = f"all_points_{segment_start_label:05d}_{segment_end_label:05d}"
             self.save_trace_video(
                 video_frames[str_idx:end_idx],
-                track_sequence[:, mask_point_list],
-                video_name=points_segment_name,
-                mask=mask_array,
+                track_sequence[:, all_keypoint_indices],
+                video_name=all_points_segment_name,
+                mask=None,
                 start_frame_idx=0,
                 end_frame_idx=local_end_frame,
                 leave_trace=False,
-                subdir=subdir,
+                subdir=all_kp_subdir,
             )
 
-            trace_segment_name = (
-                f"trace_{segment_start_label:05d}_{segment_end_label:05d}"
-            )
+            all_trace_segment_name = f"all_trace_{segment_start_label:05d}_{segment_end_label:05d}"
             self.save_trace_video(
                 video_frames[str_idx:end_idx],
-                track_sequence[:, mask_point_list],
-                video_name=trace_segment_name,
-                mask=mask_array,
+                track_sequence[:, all_keypoint_indices],
+                video_name=all_trace_segment_name,
+                mask=None,
                 start_frame_idx=0,
                 end_frame_idx=local_end_frame,
                 leave_trace=True,
-                subdir=subdir,
+                subdir=all_kp_subdir,
             )
 
-            zero_tracks = np.zeros(
-                (frames_until_now.shape[0], len(mask_point_list), 2),
+            # Save global videos (from frame 0 to current clip end)
+            all_zero_tracks = np.zeros(
+                (frames_until_now.shape[0], len(all_keypoint_indices), 2),
                 dtype=track_sequence.dtype,
             )
-            mask_tracks = track_sequence[:, mask_point_list]
-            zero_tracks[str_idx:end_idx] = mask_tracks
+            all_tracks = track_sequence[:, all_keypoint_indices]
+            all_zero_tracks[str_idx:end_idx] = all_tracks
             if str_idx > 0:
-                zero_tracks[:str_idx] = mask_tracks[0]
+                all_zero_tracks[:str_idx] = all_tracks[0]
 
-            points_zero_name = (
-                f"points_zero_{segment_end_label:05d}"
-            )
+            all_points_zero_name = f"all_points_zero_{segment_end_label:05d}"
             self.save_trace_video(
                 frames_until_now,
-                zero_tracks,
-                video_name=points_zero_name,
-                mask=mask_array,
+                all_zero_tracks,
+                video_name=all_points_zero_name,
+                mask=None,
                 start_frame_idx=str_idx,
                 end_frame_idx=segment_end_label,
                 leave_trace=False,
-                subdir=subdir,
+                subdir=all_kp_subdir,
             )
 
-            trace_zero_name = (
-                f"trace_zero_{segment_end_label:05d}"
-            )
+            all_trace_zero_name = f"all_trace_zero_{segment_end_label:05d}"
             self.save_trace_video(
                 frames_until_now,
-                zero_tracks,
-                video_name=trace_zero_name,
-                mask=mask_array,
+                all_zero_tracks,
+                video_name=all_trace_zero_name,
+                mask=None,
                 start_frame_idx=str_idx,
                 end_frame_idx=segment_end_label,
                 leave_trace=True,
-                subdir=subdir,
+                subdir=all_kp_subdir,
             )
-        
+
         print(tracked_keypoints.shape, tracked_visibility.shape)
         return frames_until_now

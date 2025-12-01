@@ -28,6 +28,7 @@ class VisualTracePipeline(BasePipeline):
         self.visualizer = VisualTraceVisualizer(
             save_dir=f"viz/visual_trace_{suffix}",
             tracks_leave_trace=-1,
+            save_per_mask=False,  # Disable per-mask video saving (all keypoints video always enabled)
         )
         
     def preprocess(self, data_dict: Dict[str, Any]):
