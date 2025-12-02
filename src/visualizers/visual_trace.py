@@ -692,6 +692,5 @@ class VisualTraceVisualizer:
                 leave_trace=True,
                 subdir=all_kp_subdir,
             )
-
-        print(tracked_keypoints.shape, tracked_visibility.shape)
+            
         return frames_until_now

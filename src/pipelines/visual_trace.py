@@ -4,7 +4,7 @@ import numpy as np
 from .base import BasePipeline, load_config
 from ..models.gemma import Gemma
 from ..models.grounded_sam import GroundedSAM2
-from ..models.cotracker import CoTracker
+from ..models.cotracker import CoTracker, KeypointFilter
 from ..visualizers.visual_trace import VisualTraceVisualizer
 
 # TODO : Implement the VisualTracePipeline
@@ -13,60 +13,6 @@ from ..visualizers.visual_trace import VisualTraceVisualizer
 # 3. Grounded SAM2 to segment the main object and extract the keypoints
 # 4. track the keypoints using CoTracker v3
 # 5. filter the keypoints using the confidence score
-
-
-class KeypointFilter:
-    # Rule-based filtering system for tracked keypoints
-
-    def __init__(self):
-        self.rules = []
-
-    def add_rule(self, rule_fn, **kwargs):
-
-        self.rules.append((rule_fn, kwargs))
-        return self
-
-    def apply(self, tracked_keypoints: np.ndarray, tracked_visibility: np.ndarray):
-        current_keypoints = tracked_keypoints
-        current_visibility = tracked_visibility
-
-        for rule_fn, kwargs in self.rules:
-            current_keypoints, current_visibility = rule_fn(
-                current_keypoints, current_visibility, **kwargs
-            )
-
-        return current_keypoints, current_visibility
-
-    @staticmethod
-    def top_moving_keypoints(tracked_keypoints: np.ndarray, tracked_visibility: np.ndarray, top_k: int = 3):
-        B, T, N, _ = tracked_keypoints.shape
-
-        if N <= top_k:
-            print(f"Number of keypoints ({N}) is less than or equal to top_k ({top_k}). No filtering applied.")
-            return tracked_keypoints, tracked_visibility, np.arange(N)
-
-        # Calculate total displacement for each keypoint from start to end frame
-        displacements = np.zeros((B, N))
-
-        for b in range(B):
-            for i in range(N):
-                start_pos = tracked_keypoints[b, 0, i]  # First frame
-                end_pos = tracked_keypoints[b, -1, i]   # Last frame
-                displacement = np.linalg.norm(end_pos - start_pos)
-                displacements[b, i] = displacement
-
-        # Average displacement across batch
-        avg_displacements = displacements.mean(axis=0)
-
-        # Get indices of top-k keypoints with largest displacement
-        # Use copy() to avoid negative stride issues
-        top_indices = np.argsort(avg_displacements)[::-1][:top_k].copy()
-
-        # Filter keypoints and visibility
-        filtered_keypoints = tracked_keypoints[:, :, top_indices, :]
-        filtered_visibility = tracked_visibility[:, :, top_indices]
-
-        return filtered_keypoints, filtered_visibility
 
 
 class VisualTracePipeline(BasePipeline):
@@ -87,8 +33,7 @@ class VisualTracePipeline(BasePipeline):
         )
 
         # Initialize keypoint filter
-        self.keypoint_filter = KeypointFilter()
-        self.keypoint_filter.add_rule(KeypointFilter.top_moving_keypoints, top_k=3)
+        self.keypoint_filter = KeypointFilter(config["keypoint_filter"]["traj_top_k"])
 
     def preprocess(self, data_dict: Dict[str, Any]):
         raise NotImplementedError
@@ -130,9 +75,7 @@ class VisualTracePipeline(BasePipeline):
             )
             
             # TODO: Apply rule-based filtering of tracked_keypoints
-            tracked_keypoints, tracked_visibility = self.keypoint_filter.apply(
-                tracked_keypoints, tracked_visibility
-            )
+            tracked_keypoints, tracked_visibility, n_key = self.keypoint_filter(tracked_keypoints, tracked_visibility)
 
             if self.verbose:
                 # Extract data_name from data_dict if available

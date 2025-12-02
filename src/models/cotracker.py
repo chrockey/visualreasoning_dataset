@@ -187,6 +187,49 @@ def read_video_from_path(path, num_frames=None) -> torch.Tensor:
     return torch.from_numpy(video)
 
 
+class KeypointFilter:
+    # Rule-based filtering system for tracked keypoints
+    def __init__(self, traj_top_k : int = 3):
+        self.traj_top_k = traj_top_k
+
+    @staticmethod
+    def __top_moving_keypoints__(tracked_keypoints: np.ndarray, tracked_visibility: np.ndarray, top_k: int = 3):
+        B, T, N, _ = tracked_keypoints.shape
+
+        if N <= top_k:
+            print(f"Number of keypoints ({N}) is less than or equal to top_k ({top_k}). No filtering applied.")
+            return tracked_keypoints, tracked_visibility, np.arange(N)
+
+        # Calculate total displacement for each keypoint from start to end frame
+        displacements = np.zeros((B, N))
+
+        for b in range(B):
+            for i in range(N):
+                start_pos = tracked_keypoints[b, 0, i]  # First frame
+                end_pos = tracked_keypoints[b, -1, i]   # Last frame
+                displacement = np.linalg.norm(end_pos - start_pos)
+                displacements[b, i] = displacement
+
+        # Average displacement across batch
+        avg_displacements = displacements.mean(axis=0)
+
+        # Get indices of top-k keypoints with largest displacement
+        # Use copy() to avoid negative stride issues
+        top_indices = np.argsort(avg_displacements)[::-1][:top_k].copy()
+
+        # Filter keypoints and visibility
+        filtered_keypoints = tracked_keypoints[:, :, top_indices, :]
+        filtered_visibility = tracked_visibility[:, :, top_indices]
+
+        return filtered_keypoints, filtered_visibility, len(top_indices)
+
+    def __call__(self, tracked_keypoints: np.ndarray, tracked_visibility: np.ndarray):
+        tracked_keypoints, tracked_visibility, keypoint_num = self.__top_moving_keypoints__(
+            tracked_keypoints, tracked_visibility, top_k=self.traj_top_k
+        )
+        return tracked_keypoints, tracked_visibility, keypoint_num
+    
+
 if __name__ == "__main__":
     import argparse
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -226,6 +269,3 @@ if __name__ == "__main__":
         grid_size=0 if args.query_points is not None else args.grid_size,
         grid_query_frame=args.grid_query_frame,
     )
-    
-    print(pred_tracks)
-    print(pred_visibility)
