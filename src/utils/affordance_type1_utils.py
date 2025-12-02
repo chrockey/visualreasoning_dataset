@@ -137,14 +137,17 @@ def find_best_interacting_object(
 def sample_interaction_points(
     object_mask: np.ndarray,
     hand_gripper_masks: List[np.ndarray],
-    num_points: int = 5
+    num_points: int = 5,
+    sample_from_non_overlap: bool = False
 ) -> np.ndarray:
-    """Sample interaction points from object mask where it overlaps with hand/gripper.
+    """Sample interaction points from object mask.
 
     Args:
         object_mask: Binary mask of the object (H, W)
         hand_gripper_masks: List of hand/gripper masks (H, W)
         num_points: Number of points to sample
+        sample_from_non_overlap: If True, sample from non-overlapping regions; 
+                                if False, sample from overlapping regions (default)
 
     Returns:
         Array of sampled points (N, 2) in (x, y) format, where N <= num_points
@@ -154,23 +157,37 @@ def sample_interaction_points(
     for hg_mask in hand_gripper_masks:
         combined_hand_mask = np.logical_or(combined_hand_mask, hg_mask)
 
-    # Find overlap region
-    overlap_region = np.logical_and(object_mask, combined_hand_mask)
+    if sample_from_non_overlap:
+        # Find non-overlapping region (object minus hand/gripper overlap)
+        overlap_region = np.logical_and(object_mask, combined_hand_mask)
+        non_overlap_region = np.logical_and(object_mask, ~combined_hand_mask)
+        
+        # Get coordinates of non-overlap pixels
+        sample_coords = np.argwhere(non_overlap_region)  # Returns (y, x) format
+        
+        if len(sample_coords) == 0:
+            # No non-overlapping region, fallback to overlap region
+            sample_coords = np.argwhere(overlap_region)
+            if len(sample_coords) == 0:
+                # No overlap either, sample from entire object mask
+                sample_coords = np.argwhere(object_mask)
+                if len(sample_coords) == 0:
+                    return np.array([])
+    else:
+        # Original behavior: sample from overlapping region
+        overlap_region = np.logical_and(object_mask, combined_hand_mask)
+        sample_coords = np.argwhere(overlap_region)  # Returns (y, x) format
 
-    # Get coordinates of overlap pixels
-    overlap_coords = np.argwhere(overlap_region)  # Returns (y, x) format
-
-    if len(overlap_coords) == 0:
-        # No overlap, sample from object mask instead
-        object_coords = np.argwhere(object_mask)
-        if len(object_coords) == 0:
-            return np.array([])
-        overlap_coords = object_coords
+        if len(sample_coords) == 0:
+            # No overlap, sample from object mask instead
+            sample_coords = np.argwhere(object_mask)
+            if len(sample_coords) == 0:
+                return np.array([])
 
     # Sample points
-    num_points = min(num_points, len(overlap_coords))
-    sampled_indices = np.random.choice(len(overlap_coords), size=num_points, replace=False)
-    sampled_coords = overlap_coords[sampled_indices]
+    num_points = min(num_points, len(sample_coords))
+    sampled_indices = np.random.choice(len(sample_coords), size=num_points, replace=False)
+    sampled_coords = sample_coords[sampled_indices]
 
     # Convert from (y, x) to (x, y) format
     sampled_points = sampled_coords[:, [1, 0]]

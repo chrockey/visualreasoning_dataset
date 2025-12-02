@@ -67,7 +67,8 @@ class AffordanceType1Pipeline(BasePipeline):
                         interaction_points = sample_interaction_points(
                             masks[best_obj_idx],
                             hand_masks,
-                            num_points=5
+                            num_points=5,
+                            sample_from_non_overlap=True
                         )
                         
                         all_interaction_points.extend(interaction_points)
@@ -175,7 +176,8 @@ class AffordanceType1Pipeline(BasePipeline):
                     interaction_points = sample_interaction_points(
                         masks[best_obj_idx],
                         hand_masks,
-                        num_points=5
+                        num_points=5,
+                        sample_from_non_overlap=True
                     )
                     
                     interaction_detail = {
@@ -355,7 +357,7 @@ class AffordanceType1Pipeline(BasePipeline):
 
             # Visualize with combined mask and interaction points
             points_for_vis = np.array(interaction_points_to_draw) if interaction_points_to_draw else None
-            vis_img = visualize_video_frame(frames[frame_idx], combined_mask, combined_bbox, points_for_vis)
+            vis_img = visualize_video_frame(frames[frame_idx], combined_mask, None, None)
 
             vis_path = os.path.join(vis_dir, f"frame_{frame_idx:04d}.png")
             vis_img.save(vis_path)
@@ -446,17 +448,23 @@ class AffordanceType1Pipeline(BasePipeline):
             "metadata": metadata
         }
 
-        # Process based on mode
-        if self.mode == "image":
-            # IMAGE MODE: Process each frame independently
-            segment_result = self._process_image_mode(
-                segment_frames, description, main_object, text_prompt, vis_dir, segment_data_dict
+        # Special handling for agibotworld dataset
+        if dataset_name == "agibotworld":
+            segment_result = self._process_agibotworld_segment(
+                segment_frames, segment_idx, description, main_object, text_prompt, vis_dir, segment_data_dict
             )
-        elif self.mode == "video":
-            # VIDEO MODE: Find interaction frame and propagate
-            segment_result = self._process_video_mode(
-                segment_frames, description, main_object, text_prompt, vis_dir, segment_data_dict
-            )
+        else:
+            # Process based on mode for other datasets
+            if self.mode == "image":
+                # IMAGE MODE: Process each frame independently
+                segment_result = self._process_image_mode(
+                    segment_frames, description, main_object, text_prompt, vis_dir, segment_data_dict
+                )
+            elif self.mode == "video":
+                # VIDEO MODE: Find interaction frame and propagate
+                segment_result = self._process_video_mode(
+                    segment_frames, description, main_object, text_prompt, vis_dir, segment_data_dict
+                )
 
         # Add segment metadata
         segment_result.update({
@@ -466,6 +474,194 @@ class AffordanceType1Pipeline(BasePipeline):
         })
 
         return segment_result
+
+    def _process_agibotworld_segment(
+        self,
+        segment_frames: np.ndarray,
+        segment_idx: int,
+        description: str,
+        main_object: str,
+        text_prompt: str,
+        vis_dir: str,
+        segment_data_dict: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Process agibotworld segments with special logic:
+        - Even segments (pick): Find interaction point in last frame, reverse propagate
+        - Odd segments (place): Find interaction point in first frame, forward propagate
+        """
+        print(f"Processing agibotworld segment {segment_idx} with {len(segment_frames)} frames")
+        
+        # Determine if this is a pick (odd) or place (even) segment
+        is_pick = (segment_idx % 2 == 0)  # 1-indexed: odd = pick, even = place
+        segment_type = "pick" if is_pick else "place"
+        
+        print(f"Segment type: {segment_type} (segment_idx: {segment_idx})")
+        
+        if is_pick:
+            # PICK SEGMENT: Find interaction in last frame, reverse propagate
+            interaction_frame_idx = len(segment_frames) - 1  # Last frame (relative to segment)
+            print(f"PICK: Finding interaction in last frame (segment frame {interaction_frame_idx})")
+            
+            # Find interaction point in the last frame
+            interaction_points, interaction_detail = self._find_interaction_frame(
+                segment_frames[interaction_frame_idx], text_prompt
+            )
+            
+            if interaction_points is not None and len(interaction_points) > 0:
+                print(f"Found {len(interaction_points)} interaction points in last frame")
+                
+                # Reverse propagate from last frame to first frame
+                print("Performing reverse SAM2 propagation...")
+                segment_masks = self.sam2(
+                    segment_frames,
+                    interaction_points,
+                    interaction_frame_idx,  # Start from last frame
+                    reverse=True,
+                    start_frame=0,
+                    end_frame=interaction_frame_idx
+                )
+            else:
+                print("No interaction points found in last frame")
+                segment_masks = {}
+                
+        else:
+            # PLACE SEGMENT: Find interaction in first frame, forward propagate  
+            interaction_frame_idx = 0  # First frame (relative to segment)
+            print(f"PLACE: Finding interaction in first frame (segment frame {interaction_frame_idx})")
+            
+            # Find interaction point in the first frame
+            interaction_points, interaction_detail = self._find_interaction_frame(
+                segment_frames[interaction_frame_idx], text_prompt
+            )
+            
+            if interaction_points is not None and len(interaction_points) > 0:
+                print(f"Found {len(interaction_points)} interaction points in first frame")
+                
+                # Forward propagate from first frame to last frame
+                print("Performing forward SAM2 propagation...")
+                segment_masks = self.sam2(
+                    segment_frames,
+                    interaction_points,
+                    interaction_frame_idx,  # Start from first frame
+                    reverse=False,
+                    start_frame=interaction_frame_idx,
+                    end_frame=len(segment_frames) - 1
+                )
+            else:
+                print("No interaction points found in first frame")
+                segment_masks = {}
+
+        # Create results for each frame
+        results = []
+        for frame_idx in range(len(segment_frames)):
+            frame_result = {
+                "frame_idx": frame_idx,
+                "main_object": main_object,
+                "mask": segment_masks.get(frame_idx).tolist() if frame_idx in segment_masks else None,
+                "segment_type": segment_type,
+                "interaction_frame_idx": interaction_frame_idx,
+                "interaction_points": interaction_points.tolist() if interaction_points is not None else None,
+                "interaction_detail": interaction_detail,
+                "is_interaction_frame": (frame_idx == interaction_frame_idx),
+                "visualization_path": None
+            }
+            
+            # Generate visualization
+            mask = segment_masks.get(frame_idx)
+            bbox = mask_to_bbox(mask) if mask is not None else None
+            points_for_vis = interaction_points if frame_idx == interaction_frame_idx else None
+            
+            vis_img = visualize_video_frame(segment_frames[frame_idx], mask, bbox, points_for_vis)
+            vis_path = os.path.join(vis_dir, f"frame_{frame_idx:04d}.png")
+            vis_img.save(vis_path)
+            frame_result["visualization_path"] = vis_path
+            
+            results.append(frame_result)
+
+        # Create demo video
+        video_output_path = os.path.join(vis_dir, "demo_video.mp4")
+        create_demo_video(vis_dir, video_output_path, fps=10, caption=f"{segment_type}: {description}")
+
+        return {
+            "video_name": segment_data_dict["video_name"],
+            "description": description,
+            "main_object": main_object,
+            "segment_type": segment_type,
+            "interaction_frame_idx": interaction_frame_idx,
+            "interaction_points": interaction_points.tolist() if interaction_points is not None else None,
+            "interaction_detail": interaction_detail,
+            "metadata": segment_data_dict.get("metadata", {}),
+            "results": results
+        }
+
+    def _find_interaction_frame(self, frame: np.ndarray, text_prompt: str) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """
+        Find interaction points in a single frame using GroundedSAM2.
+        
+        Returns:
+            interaction_points: (N, 2) array of interaction points, or None
+            interaction_detail: Dict with interaction metadata
+        """
+        # Detect objects and hands using GroundedSAM2
+        masks, scores, logits, boxes, labels = self.grounded_sam2(frame, text_prompt)
+        
+        if len(boxes) == 0:
+            self.grounded_sam2.reset_predictor()
+            return None, None
+        
+        # Find best interacting objects
+        best_objects, object_indices, hand_gripper_indices, overlaps = find_best_interacting_object(
+            masks, boxes, labels
+        )
+        
+        # Sample interaction points from all hands that have interactions
+        all_interaction_points = []
+        interaction_details = []
+        
+        for hand_type in ['left', 'right']:
+            best_obj_idx = best_objects[hand_type]
+            overlap = overlaps[hand_type]
+            hand_idx = hand_gripper_indices[hand_type]
+            
+            if best_obj_idx is not None and overlap > 50 and hand_idx is not None:
+                hand_masks = [masks[hand_idx]]
+                interaction_points = sample_interaction_points(
+                    masks[best_obj_idx],
+                    hand_masks,
+                    num_points=5,
+                    sample_from_non_overlap=True
+                )
+                
+                all_interaction_points.extend(interaction_points)
+                interaction_details.append({
+                    'hand_type': hand_type,
+                    'object_idx': best_obj_idx,
+                    'object_label': labels[best_obj_idx],
+                    'overlap': overlap,
+                    'points': interaction_points,
+                    'hand_idx': hand_idx,
+                    'object_mask': masks[best_obj_idx]
+                })
+                
+                print(f"Found {len(interaction_points)} {hand_type} hand interaction points on {labels[best_obj_idx]} (overlap: {overlap:.0f} pixels)")
+        
+        self.grounded_sam2.reset_predictor()
+        
+        # Clean up memory
+        del masks, scores, logits, boxes, labels
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        if all_interaction_points:
+            return np.array(all_interaction_points), {
+                'best_objects': best_objects,
+                'overlaps': overlaps,
+                'hand_gripper_indices': hand_gripper_indices,
+                'interaction_details': interaction_details
+            }
+        else:
+            return None, None
 
     def process(self, data_dict: Dict[str, Any]):
         """
