@@ -16,9 +16,10 @@ class GroundedSAM2:
         device: Optional[str] = None,
         box_threshold: float = 0.4,
         text_threshold: float = 0.3,
+        nms_threshold: Optional[float] = None,
     ):
         """Initialize Grounded SAM2 model.
-        
+
         Args:
             grounding_model: HuggingFace model ID for Grounding DINO
             sam2_checkpoint: Path to SAM2 checkpoint file
@@ -26,10 +27,12 @@ class GroundedSAM2:
             device: Device to run on ('cuda' or 'cpu'). Auto-detected if None.
             box_threshold: Threshold for box detection from Grounding DINO
             text_threshold: Threshold for text matching from Grounding DINO
+            nms_threshold: IoU threshold for Non-Maximum Suppression (None to disable)
         """
         self.device = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
         self.box_threshold = box_threshold
         self.text_threshold = text_threshold
+        self.nms_threshold = nms_threshold
         
         # Build SAM2 model
         if sam2_checkpoint is not None and sam2_model_config is not None:
@@ -85,7 +88,88 @@ class GroundedSAM2:
         image_np = np.array(pil_image)
         
         return pil_image, image_np, original_shape
-        
+
+    def _apply_nms(
+        self,
+        boxes: np.ndarray,
+        scores: np.ndarray,
+        labels: List[str],
+        iou_threshold: float
+    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        """Apply Non-Maximum Suppression to filter overlapping boxes.
+
+        Args:
+            boxes: Bounding boxes in xyxy format (n, 4)
+            scores: Confidence scores (n,)
+            labels: Class labels (n,)
+            iou_threshold: IoU threshold for NMS
+
+        Returns:
+            Tuple of (filtered_boxes, filtered_scores, filtered_labels)
+        """
+        if len(boxes) == 0:
+            return boxes, scores, labels
+
+        # Try using torchvision NMS (faster)
+        try:
+            from torchvision.ops import nms
+            boxes_tensor = torch.from_numpy(boxes).float()
+            scores_tensor = torch.from_numpy(scores).float()
+            keep_indices = nms(boxes_tensor, scores_tensor, iou_threshold)
+            keep_indices = keep_indices.cpu().numpy()
+        except ImportError:
+            # Fallback to custom NMS implementation
+            keep_indices = self._custom_nms(boxes, scores, iou_threshold)
+
+        return boxes[keep_indices], scores[keep_indices], [labels[i] for i in keep_indices]
+
+    def _custom_nms(
+        self,
+        boxes: np.ndarray,
+        scores: np.ndarray,
+        iou_threshold: float
+    ) -> np.ndarray:
+        """Custom NMS implementation (fallback if torchvision not available).
+
+        Args:
+            boxes: Bounding boxes in xyxy format (n, 4)
+            scores: Confidence scores (n,)
+            iou_threshold: IoU threshold for NMS
+
+        Returns:
+            Indices of boxes to keep
+        """
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 2]
+        y2 = boxes[:, 3]
+
+        areas = (x2 - x1) * (y2 - y1)
+        order = scores.argsort()[::-1]  # Sort by score descending
+
+        keep = []
+        while order.size > 0:
+            i = order[0]
+            keep.append(i)
+
+            # Compute IoU of the kept box with the rest
+            xx1 = np.maximum(x1[i], x1[order[1:]])
+            yy1 = np.maximum(y1[i], y1[order[1:]])
+            xx2 = np.minimum(x2[i], x2[order[1:]])
+            yy2 = np.minimum(y2[i], y2[order[1:]])
+
+            w = np.maximum(0.0, xx2 - xx1)
+            h = np.maximum(0.0, yy2 - yy1)
+            intersection = w * h
+
+            iou = intersection / (areas[i] + areas[order[1:]] - intersection)
+
+            # Keep boxes with IoU less than threshold
+            inds = np.where(iou <= iou_threshold)[0]
+            order = order[inds + 1]
+
+        return np.array(keep)
+
     @torch.inference_mode()
     @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     def __call__(
@@ -145,7 +229,22 @@ class GroundedSAM2:
         input_boxes = results[0]["boxes"].cpu().numpy()
         labels = results[0]["labels"]
         confidences = results[0]["scores"].cpu().numpy()
-        
+
+        # Apply NMS if threshold is set
+        if self.nms_threshold is not None and len(input_boxes) > 0:
+            input_boxes, confidences, labels = self._apply_nms(
+                input_boxes, confidences, labels, self.nms_threshold
+            )
+            if len(input_boxes) == 0:
+                # All boxes were filtered out
+                return (
+                    np.array([]).reshape(0, *original_shape),
+                    np.array([]),
+                    np.array([]).reshape(0, *original_shape),
+                    np.array([]).reshape(0, 4),
+                    []
+                )
+
         # Run SAM2 segmentation with boxes
         masks, scores, logits = self.sam2_predictor.predict(
             point_coords=None,

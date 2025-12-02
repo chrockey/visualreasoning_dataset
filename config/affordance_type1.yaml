@@ -1,5 +1,5 @@
 # AffordanceType1Pipeline Configuration
-mode: video  # 'image' or 'video' mode for processing
+mode: video  # 'image', 'video', 'video_instance_seg', or 'video_instance_seg_sam3' mode for processing
 
 dataset:
   name: egodex  # one of: egodex, oxe, agibotworld, holoassist
@@ -14,7 +14,12 @@ grounded_sam2:
   sam2_model_config: null  # Optional: path to SAM2 config
   box_threshold: 0.35  # Threshold for box detection
   text_threshold: 0.25  # Threshold for text matching
+  nms_threshold: 0.5  # IoU threshold for Non-Maximum Suppression (null to disable)
 
 sam2:
   model_id: facebook/sam2-hiera-small  # SAM2 model for video tracking
   mask_selection_mode: smallest_mask
+
+sam3:
+  model_id: facebook/sam3  # Hugging Face repo for SAM3 model
+  gpus_to_use: null  # null uses all available GPUs, or specify list like [0, 1]
