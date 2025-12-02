@@ -8,3 +8,6 @@ sam2:
 
 cotracker:
   model_id: facebookresearch/co-tracker:cotracker3_offline
+
+keypoint_filter:
+  traj_top_k: 3

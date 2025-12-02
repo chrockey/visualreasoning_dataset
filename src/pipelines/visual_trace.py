@@ -4,7 +4,7 @@ import numpy as np
 from .base import BasePipeline, load_config
 from ..models.gemma import Gemma
 from ..models.grounded_sam import GroundedSAM2
-from ..models.cotracker import CoTracker
+from ..models.cotracker import CoTracker, KeypointFilter
 from ..visualizers.visual_trace import VisualTraceVisualizer
 
 # TODO : Implement the VisualTracePipeline
@@ -13,6 +13,7 @@ from ..visualizers.visual_trace import VisualTraceVisualizer
 # 3. Grounded SAM2 to segment the main object and extract the keypoints
 # 4. track the keypoints using CoTracker v3
 # 5. filter the keypoints using the confidence score
+
 
 class VisualTracePipeline(BasePipeline):
     def __init__(self, config: Dict[str, Any], verbose: bool = True, suffix: str = "base"):
@@ -28,8 +29,12 @@ class VisualTracePipeline(BasePipeline):
         self.visualizer = VisualTraceVisualizer(
             save_dir=f"viz/visual_trace_{suffix}",
             tracks_leave_trace=-1,
+            save_per_mask=False,  # Disable per-mask video saving (all keypoints video always enabled)
         )
-        
+
+        # Initialize keypoint filter
+        self.keypoint_filter = KeypointFilter(config["keypoint_filter"]["traj_top_k"])
+
     def preprocess(self, data_dict: Dict[str, Any]):
         raise NotImplementedError
 
@@ -69,6 +74,9 @@ class VisualTracePipeline(BasePipeline):
                 video_frames[str_idx:end_idx], keypoints.reshape(1, -1, 2)
             )
             
+            # TODO: Apply rule-based filtering of tracked_keypoints
+            tracked_keypoints, tracked_visibility, n_key = self.keypoint_filter(tracked_keypoints, tracked_visibility)
+
             if self.verbose:
                 # Extract data_name from data_dict if available
                 data_name = data_dict.get("video_name", data_dict.get("name", None))
