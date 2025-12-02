@@ -11,3 +11,5 @@ cotracker:
 
 keypoint_filter:
   traj_top_k: 3
+  traj_drop_use_median : true
+  traj_drop_len_ratio : 0.1

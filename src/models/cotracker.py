@@ -189,8 +189,26 @@ def read_video_from_path(path, num_frames=None) -> torch.Tensor:
 
 class KeypointFilter:
     # Rule-based filtering system for tracked keypoints
-    def __init__(self, traj_top_k : int = 3):
+    def __init__(
+        self, 
+        traj_top_k: int = 3,
+        drop_length_ratio_threshold: float = 0.1,
+        drop_use_median: bool = True,
+    ):
+        """
+        Args:
+            traj_top_k: Number of top moving keypoints to select
+            drop_length_ratio_threshold: Threshold for filtering outliers based on trajectory length.
+                Trajectories outside [center * (1 - threshold), center * (1 + threshold)] are removed.
+                Default 0.5 means trajectories within 50%-150% of center value are kept.
+            drop_use_median: If True, use median as center (robust to outliers).
+                       If False, use mean as center.
+        """
         self.traj_top_k = traj_top_k
+        
+        # for dropping outlier trajectories
+        self.drop_length_ratio_threshold = drop_length_ratio_threshold
+        self.drop_use_median = drop_use_median
 
     @staticmethod
     def __top_moving_keypoints__(tracked_keypoints: np.ndarray, tracked_visibility: np.ndarray, top_k: int = 3):
@@ -222,11 +240,60 @@ class KeypointFilter:
         filtered_visibility = tracked_visibility[:, :, top_indices]
 
         return filtered_keypoints, filtered_visibility, len(top_indices)
-
+    
+    def __drop_outlier_trajectories__(self, tracked_keypoints: np.ndarray, tracked_visibility: np.ndarray):
+        """
+        Drop outlier trajectories based on trajectory length using simple ratio-based filtering:
+        - Uses median as center value
+        - Keeps trajectories greater than center * (1 - threshold)
+        
+        Args:
+            tracked_keypoints: (B, T, N, 2) trajectory coordinates
+            tracked_visibility: (B, T, N) visibility scores
+            
+        Returns:
+            filtered_keypoints: (B, T, M, 2) filtered trajectories
+            filtered_visibility: (B, T, M) filtered visibility
+            num_kept: Number of trajectories kept
+        """
+        B, T, N, _ = tracked_keypoints.shape
+        
+        if N == 0:
+            return tracked_keypoints, tracked_visibility, 0
+        
+        # Calculate path length (accumulated distance) for each trajectory
+        frame_diffs = tracked_keypoints[:, 1:, :, :] - tracked_keypoints[:, :-1, :, :]
+        frame_distances = np.linalg.norm(frame_diffs, axis=3)  # (B, T-1, N)
+        path_lengths = np.sum(frame_distances, axis=1).squeeze()  # (N,)
+        
+        # Use median as center
+        if self.drop_use_median:
+            center_length = np.median(path_lengths)
+        else:
+            center_length = path_lengths.mean()
+        
+        # Filter trajectories greater than center * (1 - threshold)
+        lower_bound = center_length * (1 - self.drop_length_ratio_threshold)
+        valid_mask = (path_lengths >= lower_bound)
+        valid_indices = np.where(valid_mask)[0]
+        
+        # Filter keypoints and visibility
+        filtered_keypoints = tracked_keypoints[:, :, valid_indices, :]
+        filtered_visibility = tracked_visibility[:, :, valid_indices]
+        
+        return filtered_keypoints, filtered_visibility, len(valid_indices)
+        
     def __call__(self, tracked_keypoints: np.ndarray, tracked_visibility: np.ndarray):
+        # 1. Select top-k moving keypoints
         tracked_keypoints, tracked_visibility, keypoint_num = self.__top_moving_keypoints__(
             tracked_keypoints, tracked_visibility, top_k=self.traj_top_k
         )
+        
+        # 2. Drop outlier trajectories from the selected set
+        tracked_keypoints, tracked_visibility, keypoint_num = self.__drop_outlier_trajectories__(
+            tracked_keypoints, tracked_visibility
+        )
+        
         return tracked_keypoints, tracked_visibility, keypoint_num
     
 

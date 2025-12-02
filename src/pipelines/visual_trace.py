@@ -33,7 +33,11 @@ class VisualTracePipeline(BasePipeline):
         )
 
         # Initialize keypoint filter
-        self.keypoint_filter = KeypointFilter(config["keypoint_filter"]["traj_top_k"])
+        self.keypoint_filter = KeypointFilter(
+            traj_top_k=config["keypoint_filter"]["traj_top_k"],
+            drop_length_ratio_threshold=config["keypoint_filter"]["traj_drop_len_ratio"],
+            drop_use_median=config["keypoint_filter"]["traj_drop_use_median"],
+        )
 
     def preprocess(self, data_dict: Dict[str, Any]):
         raise NotImplementedError
@@ -75,7 +79,7 @@ class VisualTracePipeline(BasePipeline):
             )
             
             # TODO: Apply rule-based filtering of tracked_keypoints
-            tracked_keypoints, tracked_visibility, n_key = self.keypoint_filter(tracked_keypoints, tracked_visibility)
+            tracked_keypoints, tracked_visibility, n_keypoints = self.keypoint_filter(tracked_keypoints, tracked_visibility)
 
             if self.verbose:
                 # Extract data_name from data_dict if available
