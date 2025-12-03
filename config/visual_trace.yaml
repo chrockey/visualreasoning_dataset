@@ -17,6 +17,11 @@ sam2:
 cotracker:
   model_id: facebookresearch/co-tracker:cotracker3_offline
   keypoints_per_mask: 3  # Number of keypoints to extract from each mask
+  grid_size: 0
+  grid_query_frame: 0
+
+keypoint_tracker:
+  model_id: cotracker  # Options: "cotracker" or "sam2"
 
 keypoint_filter:
   traj_top_k: 3
