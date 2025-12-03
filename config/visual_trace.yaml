@@ -3,6 +3,14 @@
 gemma:
   model_id: google/gemma-3-1b-it
 
+grounded_sam:
+  grounding_model: IDEA-Research/grounding-dino-base
+  box_threshold: 0.4
+  text_threshold: 0.3
+  mask_selection:
+    enabled: false
+    top_k: 3
+
 sam2:
   model_id: facebook/sam2-hiera-large
 

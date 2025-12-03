@@ -21,7 +21,10 @@ class VisualTracePipeline(BasePipeline):
         self.object_extractor = Gemma(config["gemma"]["model_id"])
         
         # Initialize GroundedSam with config
-        grounded_sam_config = config.get("grounded_sam", {})
+        grounded_sam_config = config.get("grounded_sam", {}).copy()
+        self.mask_selection_config = grounded_sam_config.pop("mask_selection", {})
+        self.mask_selection_enabled = self.mask_selection_config.get("enabled", False)
+        self.mask_selection_top_k = self.mask_selection_config.get("top_k", 1)
         self.grounded_segmenter = GroundedSAM2(**grounded_sam_config)
         
         self.keypoint_tracker = CoTracker(config["cotracker"]["model_id"])
@@ -42,6 +45,35 @@ class VisualTracePipeline(BasePipeline):
     def preprocess(self, data_dict: Dict[str, Any]):
         raise NotImplementedError
 
+    def _select_top_masks(self, masks, scores, logits, boxes, labels):
+        if (
+            not self.mask_selection_enabled
+            or masks is None
+            or masks.shape[0] == 0
+            or scores is None
+        ):
+            return masks, scores, logits, boxes, labels
+
+        scores_array = np.asarray(scores).reshape(-1)
+        top_k = self.mask_selection_top_k
+        if top_k is None or top_k <= 0:
+            return masks, scores, logits, boxes, labels
+        top_k = min(top_k, masks.shape[0])
+        if top_k >= masks.shape[0]:
+            return masks, scores_array, logits, boxes, labels
+
+        top_indices = np.argsort(scores_array)[::-1][:top_k]
+        masks = masks[top_indices]
+        scores_array = scores_array[top_indices]
+        logits = logits[top_indices] if logits is not None else None
+        boxes = boxes[top_indices] if boxes is not None else None
+        if labels is not None:
+            if isinstance(labels, list):
+                labels = [labels[i] for i in top_indices]
+            else:
+                labels = labels[top_indices]
+        return masks, scores_array, logits, boxes, labels
+
     def process(self, data_dict: Dict[str, Any]):
         descriptions = data_dict["descriptions"]
         video_frames = data_dict["frames"]
@@ -51,9 +83,20 @@ class VisualTracePipeline(BasePipeline):
             str_idx, end_idx, task_prompt = description
             word = self.object_extractor(task_prompt) + "."
             image = video_frames[str_idx]
-            
-            # 
+
+            if self.verbose:
+                print(f"Clip {clip_idx}: Task prompt: '{task_prompt}'")
+                print(f"Clip {clip_idx}: Gemma extracted key object: '{word}'")
+
+            # Segment task object
             masks, scores, logits, boxes, labels = self.grounded_segmenter(image, word)
+            masks, scores, logits, boxes, labels = self._select_top_masks(
+                masks, scores, logits, boxes, labels
+            )
+            scores = np.asarray(scores).reshape(-1) if scores is not None else None
+            logits = np.asarray(logits)
+            if logits.ndim == 4 and logits.shape[1] == 1:
+                logits = np.squeeze(logits, axis=1)
             self.grounded_segmenter.reset_predictor()
             
             # if no masks found, print error and stop execution
