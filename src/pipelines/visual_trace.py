@@ -65,17 +65,14 @@ class VisualTracePipeline(BasePipeline):
                 if self.verbose:
                     print(error_msg)
                 raise RuntimeError(error_msg)
-            
-            # Extract keypoints from masks
-            keypoints = CoTracker.extract_keypoints_from_masks(masks)  # (n, 3, 2)
-            num_masks, points_per_mask = keypoints.shape[:2]
-            point_to_mask = np.repeat(
-                np.arange(num_masks)[:, None], points_per_mask, axis=1
-            ).reshape(-1)
 
-            # TODO: Pass keypoints to keypoint_tracker
-            tracked_keypoints, tracked_visibility = self.keypoint_tracker(
-                video_frames[str_idx:end_idx], keypoints.reshape(1, -1, 2)
+            # Extract keypoints from task object masks
+            task_keypoints = CoTracker.extract_keypoints_from_masks(masks, self.keypoints_per_mask)
+            points_per_mask = task_keypoints.shape[1]
+
+            # Track task object keypoints for this clip
+            task_tracked_keypoints, task_tracked_visibility = self.keypoint_tracker(
+                video_frames[str_idx:end_idx], task_keypoints.reshape(1, -1, 2)
             )
             
             # TODO: Apply rule-based filtering of tracked_keypoints

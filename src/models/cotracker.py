@@ -77,66 +77,73 @@ class CoTracker:
         return ndimage.binary_erosion(mask, structure=kernel)
     
     @staticmethod
-    def extract_keypoints_from_mask(mask: np.ndarray) -> np.ndarray:
-        """Extract 3 keypoints from a single mask.
+    def extract_keypoints_from_mask(mask: np.ndarray, num_keypoints: int = 3) -> np.ndarray:
+        """Extract keypoints from a single mask.
         Args:
             mask: Binary mask as numpy array (H, W) with values 0 or 1
+            num_keypoints: Number of keypoints to extract (default: 3)
         Returns:
-            Keypoints as numpy array (3, 2) with (x, y) coordinates
+            Keypoints as numpy array (num_keypoints, 2) with (x, y) coordinates
         """
         # Get interior mask (away from boundary)
         interior_mask = CoTracker._get_interior_mask(mask)
-        
+
         # Get all points inside the interior mask
         y_coords, x_coords = np.where(interior_mask)
         if len(y_coords) == 0:
             # If erosion removed everything, fall back to original mask
-            # but use centroid only (safer)
             y_coords, x_coords = np.where(mask)
             if len(y_coords) == 0:
                 # Empty mask, return zeros
-                return np.zeros((3, 2), dtype=np.float32)
+                return np.zeros((num_keypoints, 2), dtype=np.float32)
             points = np.stack([x_coords, y_coords], axis=1).astype(np.float32)
             centroid = points.mean(axis=0)
-            # Return centroid repeated 3 times if we can't find interior points
-            return np.tile(centroid, (3, 1))
-        
+            # Return centroid repeated num_keypoints times if we can't find interior points
+            return np.tile(centroid, (num_keypoints, 1))
+
         points = np.stack([x_coords, y_coords], axis=1).astype(np.float32)
-        
+
         # Calculate centroid from interior points
         centroid = points.mean(axis=0)
-        
-        # First keypoint: farthest from centroid
-        distances_from_centroid = np.linalg.norm(points - centroid, axis=1)
-        first_idx = np.argmax(distances_from_centroid)
-        first_point = points[first_idx]
-        
-        # Second keypoint: farthest from both centroid and first point
-        # Use minimum distance to already selected points
-        dist_to_centroid = np.linalg.norm(points - centroid, axis=1)
-        dist_to_first = np.linalg.norm(points - first_point, axis=1)
-        min_distances = np.minimum(dist_to_centroid, dist_to_first)
-        second_idx = np.argmax(min_distances)
-        second_point = points[second_idx]
-        
-        # Combine: centroid + 2 farthest points
-        keypoints = np.vstack([centroid, first_point, second_point])
-        
-        return keypoints
+
+        # If only 1 keypoint requested, return centroid
+        if num_keypoints == 1:
+            return centroid.reshape(1, 2)
+
+        # Select keypoints using farthest point sampling
+        selected_keypoints = [centroid]
+        selected_points_array = centroid.reshape(1, 2)
+
+        for i in range(num_keypoints - 1):
+            # Find point that is farthest from all selected points
+            distances_to_selected = np.zeros((len(points), len(selected_keypoints)))
+            for j, selected_point in enumerate(selected_keypoints):
+                distances_to_selected[:, j] = np.linalg.norm(points - selected_point, axis=1)
+
+            # Use minimum distance to any selected point
+            min_distances = np.min(distances_to_selected, axis=1)
+            next_idx = np.argmax(min_distances)
+            next_point = points[next_idx]
+
+            selected_keypoints.append(next_point)
+            selected_points_array = np.vstack([selected_points_array, next_point])
+
+        return selected_points_array
     
     @staticmethod
-    def extract_keypoints_from_masks(masks: np.ndarray) -> np.ndarray:
+    def extract_keypoints_from_masks(masks: np.ndarray, num_keypoints: int = 3) -> np.ndarray:
         """Extract keypoints from all masks.
         Args:
             masks: Binary masks as numpy array (n, H, W)
+            num_keypoints: Number of keypoints to extract from each mask (default: 3)
         Returns:
-            Keypoints as numpy array (n, 3, 2) where each mask has 3 keypoints (x, y)
+            Keypoints as numpy array (n, num_keypoints, 2) where each mask has num_keypoints keypoints (x, y)
         """
         keypoints_list = []
         for i in range(masks.shape[0]):
-            keypoints = CoTracker.extract_keypoints_from_mask(masks[i])
+            keypoints = CoTracker.extract_keypoints_from_mask(masks[i], num_keypoints)
             keypoints_list.append(keypoints)
-        
+
         return np.stack(keypoints_list, axis=0)
 
 
