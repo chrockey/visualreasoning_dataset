@@ -9,19 +9,21 @@ from PIL import Image, ImageDraw
 import imageio
 
 
-def draw_circle(rgb, coord, radius, color=(255, 0, 0), visible=True, color_alpha=None):
+def draw_circle(rgb, coord, radius, color=(255, 0, 0), visible=True, color_alpha=None, outline_color=None):
     # Create a draw object
     draw = ImageDraw.Draw(rgb)
     # Calculate the bounding box of the circle
     left_up_point = (coord[0] - radius, coord[1] - radius)
     right_down_point = (coord[0] + radius, coord[1] + radius)
-    # Draw the circle
-    color = tuple(list(color) + [color_alpha if color_alpha is not None else 255])
+    # Draw the circle with separate fill and outline colors
+    fill_color = tuple(list(color) + [color_alpha if color_alpha is not None else 255])
+    outline_col = outline_color if outline_color is not None else (0, 0, 0)  # Default black outline
 
     draw.ellipse(
         [left_up_point, right_down_point],
-        fill=tuple(color) if visible else None,
-        outline=tuple(color),
+        fill=tuple(fill_color) if visible else None,
+        outline=tuple(outline_col),
+        width=1,  # Thin outline for better fill color visibility
     )
     return rgb
 
@@ -81,6 +83,7 @@ class VisualTraceVisualizer:
         frame_idx: Optional[int] = None,
         finalize: bool = False,
         subdir: Optional[str] = None,
+        keypoint_types: Optional[np.ndarray] = None,
     ):
         """Save single-frame visualizations and accumulate frames for video export."""
         # Create hierarchical directory structure if subdir is provided
@@ -186,6 +189,7 @@ class VisualTraceVisualizer:
             query_frame=0,
             color_alpha=color_alpha,
             tracks_leave_trace_override=0,
+            keypoint_types=keypoint_types,
         )
         rendered = rendered.detach().cpu()
         annotated_frame = rendered[0, 0].permute(1, 2, 0).numpy().astype(np.uint8)
@@ -217,6 +221,7 @@ class VisualTraceVisualizer:
         end_frame_idx: Optional[int] = None,
         leave_trace: bool = True,
         subdir: Optional[str] = None,
+        keypoint_types: Optional[np.ndarray] = None,
     ):
         frames_array = (
             frames.detach().cpu().numpy() if isinstance(frames, torch.Tensor) else np.asarray(frames)
@@ -278,6 +283,7 @@ class VisualTraceVisualizer:
             tracks_leave_trace_override=(
                 self.tracks_leave_trace if leave_trace else 0
             ),
+            keypoint_types=keypoint_types,
         )
         rendered = rendered.detach().cpu().to(torch.uint8)
         self.save_video(rendered, filename=video_name, subdir=subdir)
@@ -323,6 +329,7 @@ class VisualTraceVisualizer:
         compensate_for_camera_motion=False,
         color_alpha: int = 255,
         tracks_leave_trace_override: Optional[int] = None,
+        keypoint_types: Optional[np.ndarray] = None,  # 0 for task object, 1 for gripper
     ):
         B, T, C, H, W = video.shape
         _, _, N, D = tracks.shape
@@ -344,7 +351,17 @@ class VisualTraceVisualizer:
             res_video.append(rgb.copy())
         vector_colors = np.zeros((T, N, 3), dtype=np.float32)
 
-        if self.mode == "optical_flow":
+        # Use keypoint_types to assign colors if provided
+        if keypoint_types is not None:
+            # Blue (0, 0, 255) for task objects (type 0), Red (255, 0, 0) for gripper (type 1)
+            color = np.zeros((N, 3), dtype=np.float32)
+            for i in range(N):
+                if keypoint_types[i] == 1:  # Gripper
+                    color[i] = np.array([255, 0, 0])  # Red
+                else:  # Task object
+                    color[i] = np.array([0, 0, 255])  # Blue
+            vector_colors = np.repeat(color[None], T, axis=0)
+        elif self.mode == "optical_flow":
             import flow_vis
 
             vector_colors = flow_vis.flow_to_color(tracks - tracks[query_frame][None])
@@ -419,10 +436,11 @@ class VisualTraceVisualizer:
                         img = draw_circle(
                             img,
                             coord=coord,
-                            radius=int(self.linewidth * 2),
+                            radius=int(self.linewidth * 3.5),
                             color=vector_colors[t, i].astype(int),
                             visible=is_visible,
                             color_alpha=color_alpha,
+                            outline_color=(0, 0, 0),  # Black outline
                         )
             res_video[t] = np.array(img)
 
@@ -482,6 +500,7 @@ class VisualTraceVisualizer:
         point_to_mask: np.ndarray,
         global_frames_array: Optional[np.ndarray] = None,
         data_name: Optional[str] = None,
+        keypoint_types: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Visualize tracked keypoints for a clip and return updated global_frames_array."""
         # Create base hierarchical directory structure
@@ -547,6 +566,9 @@ class VisualTraceVisualizer:
                 else:
                     subdir = f"clip_{clip_idx:04d}/mask_{mask_idx:02d}"
 
+                # Extract keypoint types for this mask
+                mask_keypoint_types = keypoint_types[mask_point_list] if keypoint_types is not None else None
+
                 for frame_offset, frame in enumerate(video_frames[str_idx:end_idx]):
                     keypoints_frame = track_sequence[frame_offset, mask_point_list]
                     self.save_visualizations(
@@ -557,6 +579,7 @@ class VisualTraceVisualizer:
                         frame_idx=str_idx + frame_offset,
                         finalize=frame_offset == len(video_frames[str_idx:end_idx]) - 1,
                         subdir=subdir,
+                        keypoint_types=mask_keypoint_types,
                     )
                 points_segment_name = (
                     f"points_{segment_start_label:05d}_{segment_end_label:05d}"
@@ -570,6 +593,7 @@ class VisualTraceVisualizer:
                     end_frame_idx=local_end_frame,
                     leave_trace=False,
                     subdir=subdir,
+                    keypoint_types=mask_keypoint_types,
                 )
 
                 trace_segment_name = (
@@ -584,6 +608,7 @@ class VisualTraceVisualizer:
                     end_frame_idx=local_end_frame,
                     leave_trace=True,
                     subdir=subdir,
+                    keypoint_types=mask_keypoint_types,
                 )
 
                 zero_tracks = np.zeros(
@@ -607,6 +632,7 @@ class VisualTraceVisualizer:
                     end_frame_idx=segment_end_label,
                     leave_trace=False,
                     subdir=subdir,
+                    keypoint_types=mask_keypoint_types,
                 )
 
                 trace_zero_name = (
@@ -621,6 +647,7 @@ class VisualTraceVisualizer:
                     end_frame_idx=segment_end_label,
                     leave_trace=True,
                     subdir=subdir,
+                    keypoint_types=mask_keypoint_types,
                 )
 
         # Save all keypoints in one video (only when save_per_mask is False)
@@ -645,6 +672,7 @@ class VisualTraceVisualizer:
                 end_frame_idx=local_end_frame,
                 leave_trace=False,
                 subdir=all_kp_subdir,
+                keypoint_types=keypoint_types,
             )
 
             all_trace_segment_name = f"all_trace_{segment_start_label:05d}_{segment_end_label:05d}"
@@ -657,6 +685,7 @@ class VisualTraceVisualizer:
                 end_frame_idx=local_end_frame,
                 leave_trace=True,
                 subdir=all_kp_subdir,
+                keypoint_types=keypoint_types,
             )
 
             # Save global videos (from frame 0 to current clip end)
@@ -679,6 +708,7 @@ class VisualTraceVisualizer:
                 end_frame_idx=segment_end_label,
                 leave_trace=False,
                 subdir=all_kp_subdir,
+                keypoint_types=keypoint_types,
             )
 
             all_trace_zero_name = f"all_trace_zero_{segment_end_label:05d}"
@@ -691,6 +721,7 @@ class VisualTraceVisualizer:
                 end_frame_idx=segment_end_label,
                 leave_trace=True,
                 subdir=all_kp_subdir,
+                keypoint_types=keypoint_types,
             )
             
         return frames_until_now

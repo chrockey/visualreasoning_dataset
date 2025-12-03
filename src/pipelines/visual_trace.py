@@ -36,11 +36,20 @@ class VisualTracePipeline(BasePipeline):
         )
 
         # Initialize keypoint filter
+        keypoint_filter_config = config["keypoint_filter"]
         self.keypoint_filter = KeypointFilter(
-            traj_top_k=config["keypoint_filter"]["traj_top_k"],
-            drop_length_ratio_threshold=config["keypoint_filter"]["traj_drop_len_ratio"],
-            drop_use_median=config["keypoint_filter"]["traj_drop_use_median"],
+            traj_top_k=keypoint_filter_config["traj_top_k"],
+            drop_length_ratio_threshold=keypoint_filter_config["traj_drop_len_ratio"],
+            drop_use_median=keypoint_filter_config["traj_drop_use_median"],
         )
+
+        # Keypoints per mask configuration
+        self.keypoints_per_mask = config["cotracker"].get("keypoints_per_mask", 3)
+
+        # Robot gripper configuration
+        robot_gripper_config = config.get("robot_gripper", {})
+        self.track_robot_gripper = robot_gripper_config.get("enabled", False)
+        self.robot_gripper_prompt = robot_gripper_config.get("prompt")
 
     def preprocess(self, data_dict: Dict[str, Any]):
         raise NotImplementedError
@@ -78,6 +87,8 @@ class VisualTracePipeline(BasePipeline):
         descriptions = data_dict["descriptions"]
         video_frames = data_dict["frames"]
         global_frames_array = None
+
+        gripper_word = self.robot_gripper_prompt + "." if self.track_robot_gripper else None
 
         for clip_idx, description in enumerate(descriptions):
             str_idx, end_idx, task_prompt = description
@@ -117,9 +128,90 @@ class VisualTracePipeline(BasePipeline):
             task_tracked_keypoints, task_tracked_visibility = self.keypoint_tracker(
                 video_frames[str_idx:end_idx], task_keypoints.reshape(1, -1, 2)
             )
-            
-            # TODO: Apply rule-based filtering of tracked_keypoints
-            tracked_keypoints, tracked_visibility, n_keypoints = self.keypoint_filter(tracked_keypoints, tracked_visibility)
+
+            # Filter task keypoints
+            filtered_task_keypoints, filtered_task_visibility, n_task_keypoints = self.keypoint_filter(
+                task_tracked_keypoints,
+                task_tracked_visibility,
+            )
+
+            # Track robot gripper per clip if enabled
+            gripper_keypoints = None
+            if self.track_robot_gripper:
+                gripper_masks, gripper_scores, gripper_logits, gripper_boxes, gripper_labels = self.grounded_segmenter(
+                    video_frames[str_idx], gripper_word
+                )
+                gripper_masks, gripper_scores, gripper_logits, gripper_boxes, gripper_labels = self._select_top_masks(
+                    gripper_masks,
+                    gripper_scores,
+                    gripper_logits,
+                    gripper_boxes,
+                    gripper_labels,
+                )
+                self.grounded_segmenter.reset_predictor()
+
+                if gripper_masks is not None and gripper_masks.shape[0] > 0:
+                    gripper_scores = np.asarray(gripper_scores).reshape(-1)
+                    gripper_logits = np.asarray(gripper_logits)
+                    if gripper_logits.ndim == 4 and gripper_logits.shape[1] == 1:
+                        gripper_logits = np.squeeze(gripper_logits, axis=1)
+                    gripper_keypoints = CoTracker.extract_keypoints_from_masks(gripper_masks, self.keypoints_per_mask)
+                    gripper_points_per_mask = gripper_keypoints.shape[1]
+                    gripper_tracked_keypoints, gripper_tracked_visibility = self.keypoint_tracker(
+                        video_frames[str_idx:end_idx], gripper_keypoints.reshape(1, -1, 2)
+                    )
+                    if self.verbose:
+                        print(
+                            f"Clip {clip_idx}: Robot gripper detected with {gripper_keypoints.shape[0]} masks, "
+                            "tracking across clip frames"
+                        )
+                else:
+                    if self.verbose:
+                        print(f"Clip {clip_idx}: Warning: Robot gripper not detected for this clip")
+
+            # Combine with gripper if available
+            keypoint_types = None
+            all_keypoints = task_keypoints
+            point_to_mask = np.repeat(
+                np.arange(task_keypoints.shape[0])[:, None], points_per_mask, axis=1
+            ).reshape(-1)
+
+            if self.track_robot_gripper and gripper_keypoints is not None:
+                # Filter gripper keypoints
+                filtered_gripper_keypoints, filtered_gripper_visibility, n_gripper_keypoints = self.keypoint_filter(
+                    gripper_tracked_keypoints,
+                    gripper_tracked_visibility,
+                )
+
+                # Combine filtered task and gripper keypoints
+                filtered_task_keypoints = np.concatenate([filtered_task_keypoints, filtered_gripper_keypoints], axis=2)
+                filtered_task_visibility = np.concatenate([filtered_task_visibility, filtered_gripper_visibility], axis=2)
+
+                # Create keypoint_types array
+                keypoint_types = np.concatenate([
+                    np.zeros(n_task_keypoints, dtype=np.int32),
+                    np.ones(n_gripper_keypoints, dtype=np.int32)
+                ])
+
+                # Combine for visualization
+                all_keypoints = np.concatenate([task_keypoints, gripper_keypoints], axis=0)
+                num_task_masks = task_keypoints.shape[0]
+                gripper_point_to_mask = np.repeat(
+                    np.arange(num_task_masks, num_task_masks + gripper_keypoints.shape[0])[:, None],
+                    points_per_mask,
+                    axis=1
+                ).reshape(-1)
+                point_to_mask = np.concatenate([point_to_mask, gripper_point_to_mask])
+
+                # Combine masks
+                masks = np.concatenate([masks, gripper_masks], axis=0)
+                scores = np.concatenate([scores, gripper_scores], axis=0)
+                logits = np.concatenate([logits, gripper_logits], axis=0)
+                boxes = np.concatenate([boxes, gripper_boxes], axis=0)
+                labels = np.concatenate([labels, gripper_labels], axis=0)
+
+            tracked_keypoints = filtered_task_keypoints
+            tracked_visibility = filtered_task_visibility
 
             if self.verbose:
                 # Extract data_name from data_dict if available
@@ -134,13 +226,14 @@ class VisualTracePipeline(BasePipeline):
                     scores=scores,
                     logits=logits,
                     boxes=boxes,
-                    keypoints=keypoints,
+                    keypoints=all_keypoints,
                     tracked_keypoints=tracked_keypoints,
                     tracked_visibility=tracked_visibility,
                     video_frames=video_frames,
                     point_to_mask=point_to_mask,
                     global_frames_array=global_frames_array,
                     data_name=data_name,
+                    keypoint_types=keypoint_types,
                 )
             
 if __name__ == "__main__":
