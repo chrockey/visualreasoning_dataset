@@ -13,7 +13,7 @@ import torch
 from src.models.gemma import Gemma
 from src.models.grounded_sam2 import GroundedSAM2
 from src.models.grounded_sam2_video_tracker import GroundedSAM2VideoTracker
-from src.models.grounded_sam3_video_tracker import GroundedSAM3VideoTracker
+# from src.models.grounded_sam3_video_tracker import GroundedSAM3VideoTracker
 from src.models.molmo import Molmo
 from src.models.sam2 import SAM2
 from src.utils.affordance_type1_utils import mask_to_bbox, find_best_interacting_object, sample_interaction_points, create_demo_video, visualize_affordance, visualize_video_frame
@@ -33,7 +33,7 @@ class AffordanceType1Pipeline(BasePipeline):
         self.sam2 = SAM2(**config.get("sam2", {}), mode =  self.mode)
 
         # Initialize video tracker for continuous ID tracking mode
-        if self.mode == 'video_instance_seg':
+        if self.mode == 'video_instance_seg' or self.mode == 'all_objects':
             sam2_config = config.get("sam2", {})
             self.video_tracker = GroundedSAM2VideoTracker(
                 grounded_sam2=self.grounded_sam2,
@@ -741,6 +741,224 @@ class AffordanceType1Pipeline(BasePipeline):
             "video_path": video_output_path
         }
 
+    def _process_tracking_all_objects(
+        self,
+        frames: np.ndarray,
+        description: str,
+        main_object: str,
+        text_prompt: str,
+        vis_dir: str,
+        data_dict: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Track all objects mentioned in text prompt.
+        Detects objects only in first frame and propagates forward.
+
+        Args:
+            frames: Video frames (N, H, W, 3)
+            description: Text description
+            main_object: Main object name
+            text_prompt: Text prompt containing all objects to track
+            vis_dir: Directory to save visualizations
+            data_dict: Additional data
+
+        Returns:
+            Results dictionary with per-frame masks and object tracking info
+        """
+        print(f"ALL OBJECTS MODE: Tracking all objects in prompt across {len(frames)} frames...")
+        print(f"Text prompt: {text_prompt}")
+
+        # Create subdirectories
+        frame_dir = os.path.join(vis_dir, "frames")
+        mask_data_dir = os.path.join(vis_dir, "mask_data")
+        json_data_dir = os.path.join(vis_dir, "json_data")
+        result_dir = os.path.join(vis_dir, "result")
+
+        CommonUtils.creat_dirs(frame_dir)
+        CommonUtils.creat_dirs(mask_data_dir)
+        CommonUtils.creat_dirs(json_data_dir)
+        CommonUtils.creat_dirs(result_dir)
+
+        # Save frames to directory
+        print("Saving frames to temporary directory...")
+        frame_names = self.video_tracker.save_frames_to_directory(frames, frame_dir)
+        frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+
+        # Initialize video predictor state
+        print("Initializing SAM2 video predictor...")
+        inference_state = self.video_tracker.init_state(
+            video_path=frame_dir,
+            offload_video_to_cpu=True,
+            async_loading_frames=True
+        )
+
+        # Step 1: Detect all objects in first frame only
+        print("\n=== Detecting objects in first frame ===")
+        first_frame = frames[0]
+        masks, scores, logits, boxes, labels = self.grounded_sam2(first_frame, main_object)
+
+        if len(boxes) == 0:
+            print("No objects detected in first frame!")
+            self.grounded_sam2.reset_predictor()
+            return {
+                "video_name": data_dict["video_name"],
+                "description": description,
+                "main_object": main_object,
+                "text_prompt": text_prompt,
+                "total_objects_tracked": 0,
+                "metadata": data_dict.get("metadata", {}),
+                "results": []
+            }
+
+        print(f"Detected {len(boxes)} objects in first frame: {labels}")
+
+        # Storage for all propagated masks
+        all_frame_masks = {i: {} for i in range(len(frame_names))}
+
+        # Step 2: Propagate each detected object forward through the video
+        print("\n=== Propagating objects forward ===")
+        for obj_id, (mask, label) in enumerate(zip(masks, labels)):
+            print(f"Propagating object {obj_id} ({label})...")
+
+            # Reset state for this object
+            self.video_tracker.reset_state(inference_state)
+
+            # Convert mask to tensor
+            anchor_mask = torch.tensor(mask).to(self.video_tracker.device)
+            if anchor_mask.dtype != self.video_tracker.model_dtype:
+                anchor_mask = anchor_mask.to(self.video_tracker.model_dtype)
+
+            # Add mask at first frame
+            self.video_tracker.add_new_mask(
+                inference_state,
+                frame_idx=0,
+                obj_id=obj_id,
+                mask=anchor_mask
+            )
+
+            # Propagate forward through all frames
+            for out_frame_idx, out_obj_ids, out_mask_logits in self.video_tracker.propagate_in_video(
+                inference_state,
+                start_frame_idx=0,
+                max_frame_num_to_track=len(frame_names),
+                reverse=False
+            ):
+                for i, out_obj_id in enumerate(out_obj_ids):
+                    out_mask = (out_mask_logits[i] > 0.0)[0]
+
+                    # Compute bbox from mask
+                    out_mask_np = out_mask.cpu().numpy() if isinstance(out_mask, torch.Tensor) else out_mask
+                    bbox = mask_to_bbox(out_mask_np)
+
+                    all_frame_masks[out_frame_idx][obj_id] = {
+                        'mask': out_mask,
+                        'bbox': bbox,
+                        'class_name': label,
+                        'mask_size': out_mask.sum().item()
+                    }
+                    break
+
+        # Clean up
+        self.grounded_sam2.reset_predictor()
+        del masks, scores, logits, boxes
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        # Step 3: Save masks and metadata
+        print("\n=== Saving masks and metadata ===")
+        for frame_idx in range(len(frame_names)):
+            frame_name = frame_names[frame_idx].split(".")[0]
+            frame_masks_dict = all_frame_masks.get(frame_idx, {})
+
+            if len(frame_masks_dict) == 0:
+                # Save empty mask
+                mask_dict = MaskDictionaryModel(
+                    mask_name=f"mask_{frame_name}.npy",
+                    mask_height=frames.shape[1],
+                    mask_width=frames.shape[2]
+                )
+                mask_dict.save_empty_mask_and_json(
+                    mask_data_dir, json_data_dir,
+                    image_name_list=[frame_names[frame_idx]]
+                )
+            else:
+                # Create combined mask image
+                mask_img = torch.zeros(frames.shape[1], frames.shape[2])
+                frame_mask_model = MaskDictionaryModel(
+                    mask_name=f"mask_{frame_name}.npy",
+                    mask_height=frames.shape[1],
+                    mask_width=frames.shape[2]
+                )
+
+                for obj_id, obj_info in frame_masks_dict.items():
+                    mask_img[obj_info['mask'] == True] = obj_id
+
+                    # Add to frame mask model
+                    obj_info_model = ObjectInfo(
+                        instance_id=obj_id,
+                        mask=obj_info['mask'],
+                        class_name=obj_info['class_name']
+                    )
+                    obj_info_model.update_box()
+                    frame_mask_model.labels[obj_id] = obj_info_model
+
+                # Save mask and JSON
+                np.save(os.path.join(mask_data_dir, f"mask_{frame_name}.npy"),
+                       mask_img.numpy().astype(np.uint16))
+
+                json_data_path = os.path.join(json_data_dir, f"mask_{frame_name}.json")
+                with open(json_data_path, "w") as f:
+                    json.dump(frame_mask_model.to_dict(), f)
+
+        # Step 4: Visualize results
+        print("Creating visualizations...")
+        CommonUtils.draw_masks_and_box_with_supervision(
+            frame_dir, mask_data_dir, json_data_dir, result_dir
+        )
+
+        # Step 5: Create output video
+        from src.utils.video_utils import create_video_from_images
+        video_output_path = os.path.join(vis_dir, "tracking_video.mp4")
+        create_video_from_images(result_dir, video_output_path, frame_rate=15)
+
+        # Step 6: Build results structure
+        results = []
+        for frame_idx in range(len(frames)):
+            frame_name = f"{frame_idx:05d}"
+            mask_path = os.path.join(mask_data_dir, f"mask_{frame_name}.npy")
+            json_path = os.path.join(json_data_dir, f"mask_{frame_name}.json")
+
+            frame_result = {
+                "frame_idx": frame_idx,
+                "main_object": main_object,
+                "mask_path": mask_path if os.path.exists(mask_path) else None,
+                "json_path": json_path if os.path.exists(json_path) else None,
+                "visualization_path": os.path.join(result_dir, f"{frame_name}.jpg")
+            }
+
+            # Load mask info if available
+            if os.path.exists(json_path):
+                with open(json_path, 'r') as f:
+                    mask_info = json.load(f)
+                    frame_result["objects"] = mask_info.get("labels", {})
+
+            results.append(frame_result)
+
+        # Clean up temporary files
+        print("Cleaning up temporary files...")
+        shutil.rmtree(frame_dir, ignore_errors=True)
+
+        return {
+            "video_name": data_dict["video_name"],
+            "description": description,
+            "main_object": main_object,
+            "text_prompt": text_prompt,
+            "total_objects_tracked": len(labels),
+            "metadata": data_dict.get("metadata", {}),
+            "results": results,
+            "video_path": video_output_path
+        }
+
     def _process_segment(
         self,
         frames: np.ndarray,
@@ -821,6 +1039,12 @@ class AffordanceType1Pipeline(BasePipeline):
             segment_result = self._process_video_mode_with_continuous_id(
                 segment_frames, description, main_object, text_prompt, vis_dir, segment_data_dict
             )
+        elif self.mode == "all_objects":
+            # Track all objects mentioned in text prompt, not just target
+            segment_result = self._process_tracking_all_objects(
+                segment_frames, description, main_object, text_prompt, vis_dir, segment_data_dict
+            )
+
 
         # Add segment metadata
         segment_result.update({
