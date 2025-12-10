@@ -794,8 +794,9 @@ class AffordanceType1Pipeline(BasePipeline):
 
         # Step 1: Detect all objects in first frame only
         print("\n=== Detecting objects in first frame ===")
-        first_frame = frames[0]
-        masks, scores, logits, boxes, labels = self.grounded_sam2(first_frame, main_object)
+        first_frame_img_path = os.path.join(frame_dir, frame_names[0])
+        first_frame = Image.open(first_frame_img_path)
+        masks, scores, logits, boxes, labels = self.grounded_sam2(first_frame, main_object+'.')
 
         if len(boxes) == 0:
             print("No objects detected in first frame!")
@@ -857,7 +858,6 @@ class AffordanceType1Pipeline(BasePipeline):
                         'mask_size': out_mask.sum().item()
                     }
                     break
-
         # Clean up
         self.grounded_sam2.reset_predictor()
         del masks, scores, logits, boxes
@@ -891,16 +891,16 @@ class AffordanceType1Pipeline(BasePipeline):
                 )
 
                 for obj_id, obj_info in frame_masks_dict.items():
-                    mask_img[obj_info['mask'] == True] = obj_id
+                    mask_img[obj_info['mask'] == True] = obj_id+1
 
                     # Add to frame mask model
                     obj_info_model = ObjectInfo(
-                        instance_id=obj_id,
+                        instance_id=obj_id+1,
                         mask=obj_info['mask'],
                         class_name=obj_info['class_name']
                     )
                     obj_info_model.update_box()
-                    frame_mask_model.labels[obj_id] = obj_info_model
+                    frame_mask_model.labels[obj_id+1] = obj_info_model
 
                 # Save mask and JSON
                 np.save(os.path.join(mask_data_dir, f"mask_{frame_name}.npy"),
@@ -1128,7 +1128,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        default="video",
+        default="all_objects",
         help="Override mode from config"
     )
     args = parser.parse_args()
