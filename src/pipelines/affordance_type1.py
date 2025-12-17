@@ -796,7 +796,7 @@ class AffordanceType1Pipeline(BasePipeline):
         print("\n=== Detecting objects in first frame ===")
         first_frame_img_path = os.path.join(frame_dir, frame_names[0])
         first_frame = Image.open(first_frame_img_path)
-        masks, scores, logits, boxes, labels = self.grounded_sam2(first_frame, main_object+'.')
+        masks, scores, logits, boxes, labels = self.grounded_sam2(first_frame, text_prompt)
 
         if len(boxes) == 0:
             print("No objects detected in first frame!")
@@ -915,6 +915,9 @@ class AffordanceType1Pipeline(BasePipeline):
         CommonUtils.draw_masks_and_box_with_supervision(
             frame_dir, mask_data_dir, json_data_dir, result_dir
         )
+        CommonUtils.draw_visual_trace(
+            result_dir, json_data_dir, result_dir
+        )
 
         # Step 5: Create output video
         from src.utils.video_utils import create_video_from_images
@@ -995,7 +998,7 @@ class AffordanceType1Pipeline(BasePipeline):
         print(f"Extracting main object from description: {description}")
         main_object = self.gemma(description).strip()
         print(f"Detected main object: {main_object}")
-        text_prompt = f"{main_object}. hand. gripper."
+        text_prompt = f"hand. gripper."
 
         # Create save directory for visualizations
         save_dir = self.config.get("save_dir", ".")

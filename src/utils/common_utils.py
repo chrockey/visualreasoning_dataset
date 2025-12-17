@@ -164,3 +164,93 @@ class CommonUtils:
     def random_color():
         """random color generator"""
         return (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+
+    @staticmethod
+    def draw_visual_trace(frame_dir, json_data_dir, result_dir):
+        """
+        Draw visual traces of object centroids across frames.
+        For each frame, draws lines connecting centroids from all previous frames.
+
+        Args:
+            frame_dir: Directory containing raw frame images
+            json_data_dir: Directory containing JSON files with centroid information
+            result_dir: Directory to save output images with traces
+        """
+        CommonUtils.creat_dirs(result_dir)
+
+        # Get sorted list of frames
+        frame_names = os.listdir(frame_dir)
+        frame_names.sort()
+
+        # Build centroid history for each object across all frames
+        # Structure: {object_id: [(frame_idx, centroid_x, centroid_y), ...]}
+        object_centroid_history = {}
+
+        print("Loading centroid data from JSON files...")
+        for frame_idx, frame_name in enumerate(frame_names):
+            json_file = os.path.join(json_data_dir, "mask_" + frame_name.split(".")[0] + ".json")
+
+            if not os.path.exists(json_file):
+                continue
+
+            with open(json_file, 'r') as f:
+                json_data = json.load(f)
+
+                for obj_id_str, obj_item in json_data.get("labels", {}).items():
+                    obj_id = int(obj_id_str)
+                    centroid_x = obj_item.get("centroid_x", None)
+                    centroid_y = obj_item.get("centroid_y", None)
+
+                    # Skip if centroid data is missing
+                    if centroid_x is None or centroid_y is None:
+                        continue
+
+                    # Initialize history for this object if needed
+                    if obj_id not in object_centroid_history:
+                        object_centroid_history[obj_id] = []
+
+                    # Add centroid to history
+                    object_centroid_history[obj_id].append((frame_idx, centroid_x, centroid_y))
+
+        # Generate unique colors for each object
+        object_colors = {obj_id: CommonUtils.random_color() for obj_id in object_centroid_history.keys()}
+
+        print(f"Drawing visual traces for {len(frame_names)} frames...")
+        for frame_idx, frame_name in enumerate(frame_names):
+            # Load original frame
+            frame_path = os.path.join(frame_dir, frame_name)
+            image = cv2.imread(frame_path)
+
+            if image is None:
+                print(f"Warning: Could not load frame {frame_path}")
+                continue
+
+            # Draw traces for each object up to current frame
+            for obj_id, centroid_list in object_centroid_history.items():
+                # Filter centroids up to current frame
+                past_centroids = [(cx, cy) for (fidx, cx, cy) in centroid_list if fidx <= frame_idx]
+
+                if len(past_centroids) < 2:
+                    # Need at least 2 points to draw a line
+                    # Draw a circle at single point
+                    if len(past_centroids) == 1:
+                        cx, cy = past_centroids[0]
+                        cv2.circle(image, (int(cx), int(cy)), 3, object_colors[obj_id], -1)
+                    continue
+
+                # Draw lines connecting consecutive centroids
+                color = object_colors[obj_id]
+                for i in range(len(past_centroids) - 1):
+                    pt1 = (int(past_centroids[i][0]), int(past_centroids[i][1]))
+                    pt2 = (int(past_centroids[i+1][0]), int(past_centroids[i+1][1]))
+                    cv2.line(image, pt1, pt2, color, 2)
+
+                # Draw circles at each centroid point
+                for cx, cy in past_centroids:
+                    cv2.circle(image, (int(cx), int(cy)), 3, color, -1)
+
+            # Save annotated frame
+            output_path = os.path.join(result_dir, frame_name)
+            cv2.imwrite(output_path, image)
+
+        print(f"Visual traces saved to {result_dir}")

@@ -139,6 +139,8 @@ class ObjectInfo:
     y1:int = 0
     x2:int = 0
     y2:int = 0
+    centroid_x:float = 0.0
+    centroid_y:float = 0.0
     logit:float = 0.0
 
     def get_mask(self):
@@ -163,7 +165,11 @@ class ObjectInfo:
         self.y1 = bbox[1]
         self.x2 = bbox[2]
         self.y2 = bbox[3]
-    
+
+        # Calculate centroid
+        self.centroid_x = (self.x1 + self.x2) / 2.0
+        self.centroid_y = (self.y1 + self.y2) / 2.0
+
     def to_dict(self):
         return {
             "instance_id": self.instance_id,
@@ -172,5 +178,7 @@ class ObjectInfo:
             "y1": self.y1,
             "x2": self.x2,
             "y2": self.y2,
+            "centroid_x": self.centroid_x,
+            "centroid_y": self.centroid_y,
             "logit": self.logit
         }
