@@ -27,7 +27,7 @@ class GroundedSAM3VideoTracker:
 
     def __init__(
         self,
-        grounded_sam2: GroundedSAM2,
+        grounded_sam2: Optional[GroundedSAM2] = None,
         gpus_to_use: Optional[List[int]] = None,
         device: str = "cuda",
         model_id: str = "facebook/sam3"
@@ -36,12 +36,14 @@ class GroundedSAM3VideoTracker:
         Initialize the SAM3 video tracker.
 
         Args:
-            grounded_sam2: Existing GroundedSAM2 instance for detection
+            grounded_sam2: Optional GroundedSAM2 instance for detection.
+                          If None, only SAM3's native text-based detection will be used.
             gpus_to_use: List of GPU indices to use for SAM3 (default: all available GPUs)
             device: Device to run on ('cuda' or 'cpu')
             model_id: Hugging Face model ID for SAM3 (default: facebook/sam3)
         """
         self.grounded_sam2 = grounded_sam2
+        self.use_grounded_dino = grounded_sam2 is not None
         self.device = device
         self.model_id = model_id
 
@@ -204,10 +206,22 @@ class GroundedSAM3VideoTracker:
         response = self.video_predictor.handle_request(request=request)
         outputs = response["outputs"]
 
-        # Extract object IDs from outputs
-        obj_ids = [obj_info["id"] for obj_info in outputs]
+        obj_ids = outputs['out_obj_ids'].tolist()
+        print(f"Detected {len(obj_ids)} objects with IDs: {obj_ids}")
 
-        return frame_idx, obj_ids, outputs
+        # Convert to list of dicts format for compatibility
+        outputs_list = []
+        for i, obj_id in enumerate(obj_ids):
+            obj_info = {
+                'id': int(obj_id),
+                'prob': float(outputs['out_probs'][i]) if 'out_probs' in outputs else 1.0,
+                'box_xywh': outputs['out_boxes_xywh'][i].tolist() if 'out_boxes_xywh' in outputs else None,
+                'mask': outputs['out_binary_masks'][i] if 'out_binary_masks' in outputs else None,
+            }
+            outputs_list.append(obj_info)
+
+        return frame_idx, obj_ids, outputs_list
+
 
     def add_new_mask(
         self,
@@ -314,20 +328,15 @@ class GroundedSAM3VideoTracker:
             # Convert outputs to SAM2-compatible format
             if len(outputs) == 0:
                 continue
-
-            obj_ids = torch.tensor([obj_info["id"] for obj_info in outputs])
-
-            # Extract masks
-            masks = []
-            for obj_info in outputs:
-                if "mask" in obj_info:
-                    masks.append(torch.from_numpy(obj_info["mask"]).float())
-
-            if len(masks) > 0:
+            
+            obj_ids = torch.tensor(outputs['out_obj_ids'])
+            if 'out_binary_masks' in outputs:
+                masks = []
+                for mask in outputs['out_binary_masks']:
+                    masks.append(torch.from_numpy(mask).float())
                 mask_logits = torch.stack(masks).unsqueeze(1)  # (N, 1, H, W)
             else:
                 continue
-
             yield frame_idx, obj_ids, mask_logits
 
     def add_objects_batch(
@@ -401,14 +410,20 @@ class GroundedSAM3VideoTracker:
             if not (start_frame <= frame_idx <= end_frame):
                 continue
 
-            for obj_info in outputs:
-                obj_id = obj_info["id"]
-                if "mask" in obj_info:
-                    mask = torch.from_numpy(obj_info["mask"]).float()
-                    all_frame_masks[frame_idx][obj_id] = {
+            # Handle dict format from SAM3
+            obj_ids = outputs['out_obj_ids']
+            masks = outputs.get('out_binary_masks', [])
+            boxes = outputs.get('out_boxes_xywh', [])
+            probs = outputs.get('out_probs', [])
+            for i, obj_id in enumerate(obj_ids):
+                if i < len(masks):
+                    mask = torch.from_numpy(masks[i]).float()
+                    all_frame_masks[frame_idx][int(obj_id)] = {
                         'mask': mask,
                         'class_name': f'obj_{obj_id}',  # Default, should be overridden
-                        'mask_size': mask.sum().item()
+                        'mask_size': mask.sum().item(),
+                        'bbox': boxes[i].tolist() if i < len(boxes) else None,
+                        'prob': float(probs[i]) if i < len(probs) else 1.0
                     }
 
         return all_frame_masks

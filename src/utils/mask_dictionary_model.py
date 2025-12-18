@@ -149,22 +149,37 @@ class ObjectInfo:
     def get_id(self):
         return self.instance_id
 
-    def update_box(self):
-        nonzero_indices = torch.nonzero(self.mask)
+    def update_box(self, bbox=None):
+        """
+        Update bounding box and centroid.
 
-        if nonzero_indices.size(0) == 0:
-            # print("nonzero_indices", nonzero_indices)
-            return []
+        Args:
+            bbox: Optional bbox [x_min, y_min, x_max, y_max].
+                  If provided, use it directly. Otherwise calculate from mask.
+        """
+        if bbox is not None:
+            # Use provided bbox
+            self.x1 = bbox[0]
+            self.y1 = bbox[1]
+            self.x2 = bbox[2]
+            self.y2 = bbox[3]
+        else:
+            # Calculate bbox from mask
+            nonzero_indices = torch.nonzero(self.mask)
 
-        y_min, x_min = torch.min(nonzero_indices, dim=0)[0]
-        y_max, x_max = torch.max(nonzero_indices, dim=0)[0]
+            if nonzero_indices.size(0) == 0:
+                # print("nonzero_indices", nonzero_indices)
+                return []
 
-        #  [x_min, y_min, x_max, y_max]
-        bbox = [x_min.item(), y_min.item(), x_max.item(), y_max.item()]
-        self.x1 = bbox[0]
-        self.y1 = bbox[1]
-        self.x2 = bbox[2]
-        self.y2 = bbox[3]
+            y_min, x_min = torch.min(nonzero_indices, dim=0)[0]
+            y_max, x_max = torch.max(nonzero_indices, dim=0)[0]
+
+            #  [x_min, y_min, x_max, y_max]
+            bbox = [x_min.item(), y_min.item(), x_max.item(), y_max.item()]
+            self.x1 = bbox[0]
+            self.y1 = bbox[1]
+            self.x2 = bbox[2]
+            self.y2 = bbox[3]
 
         # Calculate centroid
         self.centroid_x = (self.x1 + self.x2) / 2.0

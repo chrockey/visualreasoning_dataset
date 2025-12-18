@@ -1,10 +1,27 @@
 # AffordanceType1Pipeline Configuration
-mode: video  # 'image', 'video', 'video_instance_seg', or 'video_instance_seg_sam3' mode for processing
+mode: visual_trace_sam3  # 'video_instance_seg', 'visual_trace', or 'visual_trace_sam3'
 
 dataset:
   name: egodex  # one of: egodex, oxe, agibotworld, holoassist
   dir: ""  # Empty string uses dataset's default directory
 
+# Mode-specific configurations
+modes:
+  # video_instance_seg and visual_trace: Use Gemma + GroundedSAM2 + SAM2 tracker
+  video_instance_seg:
+    use_grounded_detection: true  # Use Gemma + GroundedSAM2
+    tracker: sam2
+
+  visual_trace:
+    use_grounded_detection: true  # Use Gemma + GroundedSAM2
+    tracker: sam2
+
+  # visual_trace_sam3: SAM3 native text detection (optional GroundedSAM2 via config)
+  visual_trace_sam3:
+    use_grounded_detection: false  # Set to true to use Gemma + GroundedSAM2 instead of SAM3's native text detection
+    tracker: sam3
+
+# Model configurations
 gemma:
   model_id: google/gemma-2-2b-it  # Model for extracting main manipulated object
 
@@ -22,4 +39,4 @@ sam2:
 
 sam3:
   model_id: facebook/sam3  # Hugging Face repo for SAM3 model
-  gpus_to_use: null  # null uses all available GPUs, or specify list like [0, 1]
+  gpus_to_use: [0]  # null uses all available GPUs, or specify list like [0, 1]
