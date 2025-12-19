@@ -1,0 +1,4 @@
+kagglehub
+scipy
+matplotlib
+imageio[ffmpeg]
