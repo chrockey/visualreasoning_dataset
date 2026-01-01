@@ -24,7 +24,7 @@ class CommonUtils:
             print(f"An error occurred while creating the path: {e}")
 
     @staticmethod
-    def draw_masks_and_box_with_supervision(raw_image_path, mask_path, json_path, output_path):
+    def draw_masks_and_box_with_supervision(raw_image_path, mask_path, json_path, output_path, verbose=False):
         CommonUtils.creat_dirs(output_path)
         raw_image_name_list = os.listdir(raw_image_path)
         raw_image_name_list.sort()
@@ -109,7 +109,8 @@ class CommonUtils:
             
             output_image_path = os.path.join(output_path, raw_image_name)
             cv2.imwrite(output_image_path, annotated_frame)
-            print(f"Annotated image saved as {output_image_path}")
+            if verbose:
+                print(f"Annotated image saved as {output_image_path}")
 
     @staticmethod
     def draw_masks_and_box(raw_image_path, mask_path, json_path, output_path):

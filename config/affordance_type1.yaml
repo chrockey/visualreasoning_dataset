@@ -1,41 +1,18 @@
 # AffordanceType1Pipeline Configuration
-mode: visual_trace_sam3  # 'video_instance_seg', 'visual_trace', or 'visual_trace_sam3'
-
 dataset:
   name: egodex  # one of: egodex, oxe, agibotworld, holoassist
   dir: ""  # Empty string uses dataset's default directory
 
-# Mode-specific configurations
-modes:
-  # video_instance_seg and visual_trace: Use Gemma + GroundedSAM2 + SAM2 tracker
-  video_instance_seg:
-    use_grounded_detection: true  # Use Gemma + GroundedSAM2
-    tracker: sam2
+hand_only: true
+text_prompt: "robot arm"  # Direct text prompt for SAM3 or GroundingDINO
 
-  visual_trace:
-    use_grounded_detection: true  # Use Gemma + GroundedSAM2
-    tracker: sam2
-
-  # visual_trace_sam3: SAM3 native text detection (optional GroundedSAM2 via config)
-  visual_trace_sam3:
-    use_grounded_detection: false  # Set to true to use Gemma + GroundedSAM2 instead of SAM3's native text detection
-    tracker: sam3
+# Debug and visualization options
+debug: true  # Enable debug mode: visualization, debug logs, etc.
+output_dir: "output"  # Output directory name for saving results
 
 # Model configurations
 gemma:
   model_id: google/gemma-2-2b-it  # Model for extracting main manipulated object
-
-grounded_sam2:
-  grounding_model: IDEA-Research/grounding-dino-base
-  sam2_checkpoint: null  # Optional: path to SAM2 checkpoint
-  sam2_model_config: null  # Optional: path to SAM2 config
-  box_threshold: 0.35  # Threshold for box detection
-  text_threshold: 0.25  # Threshold for text matching
-  nms_threshold: 0.5  # IoU threshold for Non-Maximum Suppression (null to disable)
-
-sam2:
-  model_id: facebook/sam2-hiera-small  # SAM2 model for video tracking
-  mask_selection_mode: smallest_mask
 
 sam3:
   model_id: facebook/sam3  # Hugging Face repo for SAM3 model

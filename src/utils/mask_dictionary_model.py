@@ -13,7 +13,6 @@ class MaskDictionaryModel:
     mask_name:str = ""
     mask_height: int = 1080
     mask_width:int = 1920
-    promote_type:str = "mask"
     labels:dict = field(default_factory=dict)
 
     def add_new_frame_annotation(self, mask_list, box_list, label_list, background_value = 0):
@@ -111,7 +110,6 @@ class MaskDictionaryModel:
             "mask_name": self.mask_name,
             "mask_height": self.mask_height,
             "mask_width": self.mask_width,
-            "promote_type": self.promote_type,
             "labels": {k: v.to_dict() for k, v in self.labels.items()}
         }
     
@@ -141,7 +139,6 @@ class ObjectInfo:
     y2:int = 0
     centroid_x:float = 0.0
     centroid_y:float = 0.0
-    logit:float = 0.0
 
     def get_mask(self):
         return self.mask
@@ -194,6 +191,5 @@ class ObjectInfo:
             "x2": self.x2,
             "y2": self.y2,
             "centroid_x": self.centroid_x,
-            "centroid_y": self.centroid_y,
-            "logit": self.logit
+            "centroid_y": self.centroid_y
         }

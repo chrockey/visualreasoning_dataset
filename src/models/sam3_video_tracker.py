@@ -7,27 +7,10 @@ from typing import Dict, Any, Tuple, Generator, List, Optional
 from PIL import Image
 
 from sam3.model_builder import build_sam3_video_predictor
-from src.models.grounded_sam2 import GroundedSAM2
-from src.utils.mask_dictionary_model import MaskDictionaryModel, ObjectInfo
 
-
-class GroundedSAM3VideoTracker:
-    """
-    Combines Grounding DINO detection with SAM3 video tracking.
-    Handles continuous ID tracking across video frames using text prompts.
-
-    This class wraps:
-    - GroundedSAM2: For initial object detection on keyframes
-    - SAM3 video predictor: For temporal mask propagation with text prompts
-    - MaskDictionaryModel: For continuous object ID tracking
-
-    Note: SAM3 uses a session-based API and supports text-based detection,
-    which differs from SAM2's point-based approach.
-    """
-
+class SAM3VideoTracker:
     def __init__(
         self,
-        grounded_sam2: Optional[GroundedSAM2] = None,
         gpus_to_use: Optional[List[int]] = None,
         device: str = "cuda",
         model_id: str = "facebook/sam3"
@@ -36,14 +19,10 @@ class GroundedSAM3VideoTracker:
         Initialize the SAM3 video tracker.
 
         Args:
-            grounded_sam2: Optional GroundedSAM2 instance for detection.
-                          If None, only SAM3's native text-based detection will be used.
             gpus_to_use: List of GPU indices to use for SAM3 (default: all available GPUs)
             device: Device to run on ('cuda' or 'cpu')
             model_id: Hugging Face model ID for SAM3 (default: facebook/sam3)
         """
-        self.grounded_sam2 = grounded_sam2
-        self.use_grounded_dino = grounded_sam2 is not None
         self.device = device
         self.model_id = model_id
 
@@ -207,9 +186,6 @@ class GroundedSAM3VideoTracker:
         outputs = response["outputs"]
 
         obj_ids = outputs['out_obj_ids'].tolist()
-        print(f"Detected {len(obj_ids)} objects with IDs: {obj_ids}")
-
-        # Convert to list of dicts format for compatibility
         outputs_list = []
         for i, obj_id in enumerate(obj_ids):
             obj_info = {
@@ -415,14 +391,17 @@ class GroundedSAM3VideoTracker:
             masks = outputs.get('out_binary_masks', [])
             boxes = outputs.get('out_boxes_xywh', [])
             probs = outputs.get('out_probs', [])
+
+
             for i, obj_id in enumerate(obj_ids):
                 if i < len(masks):
                     mask = torch.from_numpy(masks[i]).float()
+                    bbox = boxes[i].tolist() if i < len(boxes) else None
                     all_frame_masks[frame_idx][int(obj_id)] = {
                         'mask': mask,
                         'class_name': f'obj_{obj_id}',  # Default, should be overridden
                         'mask_size': mask.sum().item(),
-                        'bbox': boxes[i].tolist() if i < len(boxes) else None,
+                        'bbox': bbox,
                         'prob': float(probs[i]) if i < len(probs) else 1.0
                     }
 
@@ -468,27 +447,3 @@ class GroundedSAM3VideoTracker:
         if hasattr(self.video_predictor, 'shutdown'):
             self.video_predictor.shutdown()
             print("SAM3 video predictor shutdown")
-
-    def detect_and_track(
-        self,
-        frames: np.ndarray,
-        text_prompt: str,
-        step: int = 20,
-        iou_threshold: float = 0.8
-    ) -> Dict[int, MaskDictionaryModel]:
-        """
-        High-level interface: detect objects and track them across video.
-
-        Args:
-            frames: Video frames as numpy array (N, H, W, 3)
-            text_prompt: Text prompt for object detection
-            step: Keyframe sampling interval
-            iou_threshold: IoU threshold for object matching
-
-        Returns:
-            Dictionary mapping frame_idx -> MaskDictionaryModel
-        """
-        raise NotImplementedError(
-            "Use the lower-level methods (init_state, add_new_mask_with_text, propagate_in_video) "
-            "for more control. See _process_video_mode_with_continuous_id() for usage example."
-        )
