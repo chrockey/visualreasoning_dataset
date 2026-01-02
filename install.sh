@@ -10,3 +10,6 @@ MAX_JOBS=64 pip -v install --no-deps --no-build-isolation flash-attn
 
 pip install hydra-core einops accelerate iopath kagglehub
 pip install typing pathlib dataclasses
+
+git clone https://github.com/facebookresearch/sam3.git
+cd sam3 && pip install -e .
