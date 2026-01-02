@@ -159,7 +159,13 @@ class HoloAssistDataset(BaseDataset):
         return ann_by_video
 
     def _load_video_frames_and_fps(self, video_path: Path) -> Tuple[np.ndarray, float]:
-        cap = cv2.VideoCapture(str(video_path))
+        cap = cv2.VideoCapture(str(video_path), cv2.CAP_FFMPEG)
+
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open video: {video_path}")
+
+        cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
+
         fps = cap.get(cv2.CAP_PROP_FPS)
         frames: List[np.ndarray] = []
         while True:

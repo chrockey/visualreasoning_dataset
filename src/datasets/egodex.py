@@ -75,7 +75,13 @@ class EgoDexDataset(BaseDataset):
         }
 
     def _load_video_frames(self, video_path: Path) -> np.ndarray:
-        cap = cv2.VideoCapture(str(video_path))
+        cap = cv2.VideoCapture(str(video_path), cv2.CAP_FFMPEG)
+
+        if not cap.isOpened():
+            raise RuntimeError(f"Failed to open video: {video_path}")
+
+        cap.set(cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_NONE)
+
         frames = []
         while True:
             ret, frame = cap.read()
@@ -83,6 +89,10 @@ class EgoDexDataset(BaseDataset):
                 break
             frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         cap.release()
+
+        if len(frames) == 0:
+            raise RuntimeError(f"No frames could be read from video: {video_path}")
+
         return np.array(frames)
 
     def _load_hdf5(self, hdf5_path: Path) -> Dict[str, Any]:

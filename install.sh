@@ -6,4 +6,6 @@ pip install opencv-python h5py
 pip install av
 pip install tensorflow  # For Open X-Embodiment dataset (TFRecord parsing)
 pip install --no-deps --no-build-isolation git+https://github.com/facebookresearch/sam2.git
-pip install --no-deps --no-build-isolation flash-attn
+MAX_JOBS=64 pip -v install --no-deps --no-build-isolation flash-attn
+
+pip install hydra-core einops accelerate iopath kagglehub

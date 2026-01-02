@@ -45,12 +45,12 @@ def extract_points(
 class Molmo:
     def __init__(
         self,
-        molmo_model_id: str = "allenai/Molmo-7B-D-0924",
-        use_tqdm: bool = False,
+        model_id: str = "allenai/Molmo-7B-D-0924",
+        use_tqdm: bool = True,
         max_new_tokens: int = 64,
         seed: int = 42,
     ):
-        self.molmo_model_id = molmo_model_id
+        self.molmo_model_id = model_id
         self.use_tqdm = use_tqdm
         self.max_new_tokens = max_new_tokens
         self.seed = seed
@@ -92,6 +92,7 @@ class Molmo:
                 max_new_tokens=self.max_new_tokens,
                 stop_strings="<|endoftext|>",
             ),
+            use_cache=False,
             tokenizer=self.molmo["processor"].tokenizer,
         )
         generated_text = output[0, inputs["input_ids"].size(1) :]
@@ -118,7 +119,12 @@ class Molmo:
 if __name__ == "__main__":
     molmo = Molmo()
     points = molmo(
-        image_paths=[f"demo/16341/campos_512_v4/{i:05d}/{i:05d}.png" for i in range(5)],
+        images=[
+            Image.open(
+                f"demo/16341/campos_512_v4/{i:05d}/{i:05d}.png"
+            ).convert("RGB")
+            for i in range(5)
+        ],
         query="Point to the part of the chair that human sit on.",
     )
     import pdb

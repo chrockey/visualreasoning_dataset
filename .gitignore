@@ -19,9 +19,12 @@ html/
 tmp/
 viewer/
 
-# visualization files
+# result files
 renderings/
 renderings_bak/
+visualizations/
+output/
 
 # sample data
 vla-dataset-samples
+sam3/

@@ -1,7 +1,13 @@
 # AffordanceType1Pipeline Configuration
+hand_only: true
+text_prompt: "robot arm" 
+debug: true  
+output_dir: "output" 
 
-molmo:
-  model_id: allenai/Molmo-7B-D-0924
+# Model configurations
+gemma:
+  model_id: google/gemma-2-2b-it  
 
-sam2:
-  model_id: facebook/sam2-hiera-small
+sam3:
+  model_id: facebook/sam3  
+  gpus_to_use: [0]  # null uses all available GPUs, or specify list like [0, 1]
