@@ -116,10 +116,9 @@ class AffordanceType1Pipeline(BasePipeline):
             propagation_direction="forward"
         )
 
-        # Step 3: Build frame mask models and compute centroids
+        # Step 3: Save masks and metadata
         print("\n=== Saving masks and metadata ===")
-        frame_mask_models = {}  # {frame_idx: MaskDictionaryModel}
-        mask_images = {}  # {frame_idx: mask_img tensor}
+        prev_ema = {}  # {obj_id: (ema_cx, ema_cy)} for EMA smoothing
 
         for frame_idx in range(len(frame_names)):
             frame_name = frame_names[frame_idx].split(".")[0]
@@ -165,39 +164,26 @@ class AffordanceType1Pipeline(BasePipeline):
                             int((bbox[1] + bbox[3]) * img_height)  # y_max = (y + height) * img_height
                         ]
                     obj_info_model.update_box(bbox)
+
+                    # Compute EMA centroid
+                    cx, cy = obj_info_model.centroid_x, obj_info_model.centroid_y
+                    if obj_id in prev_ema:
+                        ema_cx = self.ema_alpha * cx + (1 - self.ema_alpha) * prev_ema[obj_id][0]
+                        ema_cy = self.ema_alpha * cy + (1 - self.ema_alpha) * prev_ema[obj_id][1]
+                    else:
+                        ema_cx, ema_cy = cx, cy
+                    obj_info_model.ema_centroid_x = ema_cx
+                    obj_info_model.ema_centroid_y = ema_cy
+                    prev_ema[obj_id] = (ema_cx, ema_cy)
+
                     frame_mask_model.labels[obj_id+1] = obj_info_model
 
-                frame_mask_models[frame_idx] = frame_mask_model
-                mask_images[frame_idx] = mask_img
-
-        # Step 3.5: Apply EMA smoothing to centroids
-        print("\n=== Computing EMA centroids ===")
-        prev_ema = {}  # {obj_id: (ema_cx, ema_cy)}
-        alpha = self.ema_alpha
-
-        for frame_idx in sorted(frame_mask_models.keys()):
-            frame_mask_model = frame_mask_models[frame_idx]
-            for obj_id, obj_info in frame_mask_model.labels.items():
-                cx, cy = obj_info.centroid_x, obj_info.centroid_y
-
-                if obj_id in prev_ema:
-                    ema_cx = alpha * cx + (1 - alpha) * prev_ema[obj_id][0]
-                    ema_cy = alpha * cy + (1 - alpha) * prev_ema[obj_id][1]
-                else:
-                    ema_cx, ema_cy = cx, cy  # First frame: EMA = raw
-
-                obj_info.ema_centroid_x = ema_cx
-                obj_info.ema_centroid_y = ema_cy
-                prev_ema[obj_id] = (ema_cx, ema_cy)
-
-        # Step 3.6: Save JSON and mask files
-        for frame_idx, frame_mask_model in frame_mask_models.items():
-            frame_name = frame_names[frame_idx].split(".")[0]
-            json_data_path = os.path.join(json_data_dir, f"mask_{frame_name}.json")
-            with open(json_data_path, "w") as f:
-                json.dump(frame_mask_model.to_dict(), f)
-            np.save(os.path.join(mask_data_dir, f"mask_{frame_name}.npy"),
-                mask_images[frame_idx].numpy().astype(np.uint16))
+                # Save JSON and mask
+                json_data_path = os.path.join(json_data_dir, f"mask_{frame_name}.json")
+                with open(json_data_path, "w") as f:
+                    json.dump(frame_mask_model.to_dict(), f)
+                np.save(os.path.join(mask_data_dir, f"mask_{frame_name}.npy"),
+                    mask_img.numpy().astype(np.uint16))
 
         # Step 4: Visualize results (only if debug mode is enabled)
         if self.debug:
