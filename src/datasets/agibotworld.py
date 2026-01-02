@@ -243,7 +243,7 @@ class AgiBotWorldDataset(BaseDataset):
             elif fname.endswith("_intrinsic_params.json"):
                 with jf.open("r") as f:
                     content = json.load(f)
-                    prefix = fname.replace("_extrinsic_params_aligned.json", "")
+                    prefix = fname.replace("_intrinsic_params.json", "")
 
                 intr = None
 
