@@ -1,110 +1,11 @@
 from typing import Literal, Optional
+from collections import OrderedDict
+
 import numpy as np
 import torch
+from PIL import Image
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.sam2_video_predictor import SAM2VideoPredictor
-from PIL import Image
-
-class SAM2VideoPredictorWrapper():
-    def __init__(self, model_id, **kwargs):
-        self.base = SAM2VideoPredictor.from_pretrained(model_id, **kwargs)
-
-    def preprocess_frames(
-        self,
-        frames,
-        offload_video_to_cpu,
-        img_mean=(0.485, 0.456, 0.406),
-        img_std=(0.229, 0.224, 0.225),
-        async_loading_frames=False,
-        compute_device=torch.device("cuda"),
-    ):
-        import torch
-        T, H, W, C = frames.shape
-        video_height, video_width = H, W
-        img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
-        img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
-        images = []
-        for i in range(T):
-            frame = frames[i]
-            frame = Image.fromarray(frame.astype("uint8"))
-            frame = frame.resize((self.base.image_size, self.base.image_size), Image.BILINEAR)
-            frame = np.array(frame)
-            # Convert (H,W,C) → (C,H,W)
-            tensor = torch.tensor(frame).permute(2, 0, 1)  # (3, H, W)
-            images.append(tensor)
-
-        # stack to (T, 3, H, W)
-        images = torch.stack(images).float() / 255.0
-
-        # move to GPU if needed
-        if not offload_video_to_cpu:
-            images = images.to(compute_device)
-            img_mean = img_mean.to(compute_device)
-            img_std = img_std.to(compute_device)
-
-        # normalize
-        images = (images - img_mean) / img_std
-        return images, video_height, video_width
-
-    @torch.inference_mode()
-    def init_state(
-        self,
-        frames,
-        offload_video_to_cpu=False,
-        offload_state_to_cpu=False,
-        async_loading_frames=False
-    ):
-        """Initialize an inference state."""
-        from collections import OrderedDict
-        
-        images, video_height, video_width = self.preprocess_frames(
-            frames, offload_video_to_cpu
-        )
-        
-        compute_device = self.base.device  # device of the model
-        inference_state = {}
-        inference_state["images"] = images
-        inference_state["num_frames"] = len(images)
-        # whether to offload the video frames to CPU memory
-        # turning on this option saves the GPU memory with only a very small overhead
-        inference_state["offload_video_to_cpu"] = offload_video_to_cpu
-        # whether to offload the inference state to CPU memory
-        # turning on this option saves the GPU memory at the cost of a lower tracking fps
-        # (e.g. in a test case of 768x768 model, fps dropped from 27 to 24 when tracking one object
-        # and from 24 to 21 when tracking two objects)
-        inference_state["offload_state_to_cpu"] = offload_state_to_cpu
-        # the original video height and width, used for resizing final output scores
-        inference_state["video_height"] = video_height
-        inference_state["video_width"] = video_width
-        inference_state["device"] = compute_device
-        if offload_state_to_cpu:
-            inference_state["storage_device"] = torch.device("cpu")
-        else:
-            inference_state["storage_device"] = compute_device
-        # inputs on each frame
-        inference_state["point_inputs_per_obj"] = {}
-        inference_state["mask_inputs_per_obj"] = {}
-        # visual features on a small number of recently visited frames for quick interactions
-        inference_state["cached_features"] = {}
-        # values that don't change across frames (so we only need to hold one copy of them)
-        inference_state["constants"] = {}
-        # mapping between client-side object id and model-side object index
-        inference_state["obj_id_to_idx"] = OrderedDict()
-        inference_state["obj_idx_to_id"] = OrderedDict()
-        inference_state["obj_ids"] = []
-        # Slice (view) of each object tracking results, sharing the same memory with "output_dict"
-        inference_state["output_dict_per_obj"] = {}
-        # A temporary storage to hold new outputs when user interact with a frame
-        # to add clicks or mask (it's merged into "output_dict" before propagation starts)
-        inference_state["temp_output_dict_per_obj"] = {}
-        # Frames that already holds consolidated outputs from click or mask inputs
-        # (we directly use their consolidated outputs during tracking)
-        # metadata for each tracking frame (e.g. which direction it's tracked)
-        inference_state["frames_tracked_per_obj"] = {}
-        # Warm up the visual backbone and cache the image feature on frame 0
-        self.base._get_image_feature(inference_state, frame_idx=0, batch_size=1)
-        return inference_state
-
 
 
 class SAM2:
@@ -114,66 +15,18 @@ class SAM2:
         mask_selection_mode: Literal[
             "highest_score", "smallest_mask", "random"
         ] = "smallest_mask",
-        mode: Literal["image", "video"] = "image",
-        checkpoint_path: Optional[str] = None,
-        model_cfg: Optional[str] = None,
     ):
         self.model_id = model_id
-        self.mask_selection_mode = mask_selection_mode
-        self.mode = mode
-
+        self.sam = SAM2ImagePredictor.from_pretrained(
+            self.model_id,
+            hydra_overrides_extra=["++model.compile_image_encoder=True"],
+        )
         assert mask_selection_mode in [
             "highest_score",
-            "smallest_mask", 
+            "smallest_mask",
             "random",
         ], "Invalid mask selection mode"
-        
-        if self.mode  == "image":
-            self.sam = SAM2ImagePredictor.from_pretrained(
-                self.model_id,
-                hydra_overrides_extra=["++model.compile_image_encoder=True"],
-            )
-        elif self.mode  == "video":
-            self.sam_wrapper= SAM2VideoPredictorWrapper(
-                self.model_id,
-                hydra_overrides_extra=["++model.compile_image_encoder=True"]
-            )
-
-    @torch.inference_mode()
-    @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    def video_inference(self, video_frames: np.ndarray, points: np.ndarray, points_frame_idx: int = 0, reverse: bool = False):
-        """Video segmentation using SAM2 video predictor.
-        
-        Args:
-            video_frames: Array of shape (N, H, W, 3) - video frames
-            points: Array of shape (num_points, 2) - points
-            points_frame_idx: Index of the frame to add prompts (default: 0)
-            reverse: Whether to use reverse propagation (default: False)
-        
-        Returns:
-            Dictionary of masks for each frame
-        """
-        # Initialize video state
-        state = self.sam_wrapper.init_state(video_frames)
-        
-        # Add points to the specified frame
-        point_coords = points
-        point_labels = np.ones(len(points))
-        
-        # Add new points
-        frame_idx, object_ids, masks = self.sam_wrapper.base.add_new_points_or_box(
-            state,
-            frame_idx=points_frame_idx,
-            obj_id=1,  # Single object
-            points=point_coords,
-            labels=point_labels,
-        )
-        # Propagate through video with reverse option
-        video_segments = {}
-        for frame_idx, object_ids, masks in self.sam_wrapper.base.propagate_in_video(state, reverse=reverse):
-            video_segments[frame_idx] = (masks[0] > 0.0).cpu().numpy()
-        return video_segments
-
+        self.mask_selection_mode = mask_selection_mode
 
     @torch.inference_mode()
     @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
@@ -193,26 +46,8 @@ class SAM2:
         masks = logits > 0
         return masks, scores, logits
 
-    def __call__(self, frames, points, points_frame_index: Optional[int] = None, reverse: bool = False, start_frame: Optional[int] = None, end_frame: Optional[int] = None):
-        """Unified interface for both image and video segmentation.
-        
-        Args:
-            frames: Input frames
-            points: Input points
-            points_frame_index: Frame index where points are located
-            reverse: Whether to use reverse propagation (backward from points_frame_index)
-            start_frame: Start frame for propagation (only used with reverse=True)
-            end_frame: End frame for propagation (only used with reverse=True)
-        """
-        if self.mode == "image":
-            # Single image mode - original functionality
-            return self._process_single_image(frames, points)
-        elif self.mode == "video":
-            # Video mode - use points and propagate
-            return self._process_video(frames, points, points_frame_index, reverse, start_frame, end_frame)
-    
-    def _process_single_image(self, image: np.ndarray, points: np.ndarray):
-        """Process single image - original functionality."""
+    def __call__(self, image: np.ndarray, points: np.ndarray):
+        # masks.shape (num_queries, 3, H, W)
         masks, scores, logits = self.inference(image, points)
         if points.shape[0] == 1:
             masks = masks[np.newaxis, ...]
@@ -236,28 +71,270 @@ class SAM2:
             score = scores[arange, idx]
             logit = logits[arange, idx]
         return mask, score, logit
+
+
+class SAM2VideoPredictorWrapper:
+    def __init__(
+        self,
+        model_id: str = "facebook/sam2-hiera-small",
+        offload_video_to_cpu: bool = False,
+        offload_state_to_cpu: bool = False,
+        **kwargs,
+    ):
+        """Initialize SAM2 Video Predictor wrapper.
+        
+        Args:
+            model_id: HuggingFace model ID for SAM2
+            offload_video_to_cpu: Whether to offload video frames to CPU memory
+            offload_state_to_cpu: Whether to offload inference state to CPU memory
+            **kwargs: Additional arguments passed to from_pretrained
+        """
+        self.model_id = model_id
+        self.offload_video_to_cpu = offload_video_to_cpu
+        self.offload_state_to_cpu = offload_state_to_cpu
+        self.base = SAM2VideoPredictor.from_pretrained(
+            self.model_id,
+            hydra_overrides_extra=["++model.compile_image_encoder=True"],
+            **kwargs,
+        )
+
+    def _preprocess_frames(
+        self,
+        frames: np.ndarray,
+        offload_video_to_cpu: bool,
+        img_mean: tuple = (0.485, 0.456, 0.406),
+        img_std: tuple = (0.229, 0.224, 0.225),
+    ) -> tuple[torch.Tensor, int, int]:
+        """Preprocess video frames for SAM2.
+        
+        Args:
+            frames: Array of shape (T, H, W, 3) - video frames
+            offload_video_to_cpu: Whether to keep frames on CPU
+            img_mean: Image normalization mean
+            img_std: Image normalization std
+            
+        Returns:
+            Tuple of (preprocessed_images, video_height, video_width)
+        """
+        T, H, W, C = frames.shape
+        video_height, video_width = H, W
+        
+        img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
+        img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
+        
+        images = []
+        for i in range(T):
+            frame = frames[i]
+            frame = Image.fromarray(frame.astype("uint8"))
+            frame = frame.resize((self.base.image_size, self.base.image_size), Image.BILINEAR)
+            frame = np.array(frame)
+            # Convert (H,W,C) → (C,H,W)
+            tensor = torch.tensor(frame).permute(2, 0, 1)  # (3, H, W)
+            images.append(tensor)
+
+        # stack to (T, 3, H, W)
+        images = torch.stack(images).float() / 255.0
+
+        # move to GPU if needed
+        compute_device = self.base.device
+        if not offload_video_to_cpu:
+            images = images.to(compute_device)
+            img_mean = img_mean.to(compute_device)
+            img_std = img_std.to(compute_device)
+
+        # normalize
+        images = (images - img_mean) / img_std
+        return images, video_height, video_width
+
+    @torch.inference_mode()
+    def _init_state(
+        self,
+        frames: np.ndarray,
+        offload_video_to_cpu: Optional[bool] = None,
+        offload_state_to_cpu: Optional[bool] = None,
+    ) -> dict:
+        """Initialize an inference state for video processing.
+        
+        Args:
+            frames: Array of shape (T, H, W, 3) - video frames
+            offload_video_to_cpu: Whether to offload video frames to CPU (uses instance default if None)
+            offload_state_to_cpu: Whether to offload state to CPU (uses instance default if None)
+            
+        Returns:
+            Inference state dictionary
+        """
+        if offload_video_to_cpu is None:
+            offload_video_to_cpu = self.offload_video_to_cpu
+        if offload_state_to_cpu is None:
+            offload_state_to_cpu = self.offload_state_to_cpu
+        
+        images, video_height, video_width = self._preprocess_frames(
+            frames, offload_video_to_cpu
+        )
+        
+        compute_device = self.base.device
+        inference_state = {
+            "images": images,
+            "num_frames": len(images),
+            "offload_video_to_cpu": offload_video_to_cpu,
+            "offload_state_to_cpu": offload_state_to_cpu,
+            "video_height": video_height,
+            "video_width": video_width,
+            "device": compute_device,
+            "storage_device": torch.device("cpu") if offload_state_to_cpu else compute_device,
+            "point_inputs_per_obj": {},
+            "mask_inputs_per_obj": {},
+            "cached_features": {},
+            "constants": {},
+            "obj_id_to_idx": OrderedDict(),
+            "obj_idx_to_id": OrderedDict(),
+            "obj_ids": [],
+            "output_dict_per_obj": {},
+            "temp_output_dict_per_obj": {},
+            "frames_tracked_per_obj": {},
+        }
+        
+        # Warm up the visual backbone and cache the image feature on frame 0
+        self.base._get_image_feature(inference_state, frame_idx=0, batch_size=1)
+        return inference_state
     
-    def _process_video(self, video_frames: np.ndarray, points: np.ndarray, points_frame_index, reverse: bool = False, start_frame: Optional[int] = None, end_frame: Optional[int] = None):
+    @torch.inference_mode()
+    @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    def video_inference(
+        self,
+        video_frames: np.ndarray,
+        points: Optional = None,
+        points_frame_idx: int = 0,
+        reverse: bool = False,
+        mask: Optional = None,
+    ) -> dict[int, np.ndarray]:
+        """Video segmentation using SAM2 video predictor.
+        
+        Args:
+            video_frames: Array of shape (T, H, W, 3) - video frames
+            points: Optional array of shape (num_points, 2) - point coordinates
+            mask: Optional binary mask as numpy array (H, W) - initial mask
+            points_frame_idx: Index of the frame to add prompts (default: 0)
+            reverse: Whether to use reverse propagation (default: False)
+        
+        Returns:
+            Dictionary mapping frame indices to binary masks
+        
+        Raises:
+            ValueError: If neither points nor mask is provided, or both are provided
+        """
+        # Validate inputs
+        if points is None and mask is None:
+            raise ValueError("Either points or mask must be provided")
+        if points is not None and mask is not None:
+            raise ValueError("Cannot provide both points and mask, choose one")
+        
+        # Initialize video state
+        state = self._init_state(video_frames)
+        
+        # Add prompt based on input type
+        if mask is None:
+            # Points input path
+            if points is None or len(points) == 0:
+                return {}
+            
+            point_labels = np.ones(len(points))
+            self.base.add_new_points_or_box(
+                state,
+                frame_idx=points_frame_idx,
+                obj_id=1,
+                points=points,
+                labels=point_labels,
+            )
+        else:
+            # Mask input path
+            if mask.sum() == 0:
+                return {}
+            
+            self.base.add_new_mask(
+                state,
+                frame_idx=points_frame_idx,
+                obj_id=1,
+                mask=mask,
+            )
+                    
+        # Propagate through video with reverse option
+        video_segments = {}
+        for frame_idx, object_ids, masks in self.base.propagate_in_video(state, reverse=reverse):
+            video_segments[frame_idx] = (masks[0] > 0.0).cpu().numpy()
+        
+        return video_segments
+
+    def video_inference_with_mask(
+        self,
+        video_frames: np.ndarray,
+        mask: np.ndarray,
+        mask_frame_idx: int = 0,
+        reverse: bool = False,
+    ) -> dict[int, np.ndarray]:
+        """Video segmentation using SAM2 video predictor with mask input.
+        
+        Convenience wrapper for video_inference with mask input.
+        
+        Args:
+            video_frames: Array of shape (T, H, W, 3) - video frames
+            mask: Binary mask as numpy array (H, W) - initial mask
+            mask_frame_idx: Index of the frame where mask is located (default: 0)
+            reverse: Whether to use reverse propagation (default: False)
+        
+        Returns:
+            Dictionary mapping frame indices to binary masks
+        """
+        
+        if isinstance(mask, np.ndarray):
+            mask_tensor = torch.from_numpy(mask).float().to(self.base.device)
+        else:
+            mask_tensor = mask
+            
+        return self.video_inference(
+            video_frames=video_frames,
+            mask=mask,
+            points_frame_idx=mask_frame_idx,
+            reverse=reverse,
+        )
+
+    def process_video(
+        self,
+        video_frames: np.ndarray,
+        points: np.ndarray,
+        points_frame_index: int,
+        reverse: bool = False,
+        start_frame: Optional[int] = None,
+        end_frame: Optional[int] = None,
+    ) -> dict[int, np.ndarray]:
         """Process video frames using points and propagation.
         
         Args:
-            video_frames: Input video frames
-            points: Input points
+            video_frames: Array of shape (T, H, W, 3) - input video frames
+            points: Array of shape (num_points, 2) - point coordinates
             points_frame_index: Frame index where points are located
             reverse: Whether to use reverse propagation
-            start_frame: Start frame for propagation range
-            end_frame: End frame for propagation range
+            start_frame: Start frame for propagation range (required if reverse=True)
+            end_frame: End frame for propagation range (required if reverse=True)
+        
+        Returns:
+            Dictionary mapping frame indices to binary masks
         """
         if points is None or len(points) == 0:
             return {}
             
         if reverse:
+            if start_frame is None or end_frame is None:
+                raise ValueError("start_frame and end_frame must be provided when reverse=True")
+            
             # Extract segment frames for reverse propagation
-            segment_frames = video_frames[start_frame:end_frame+1]
+            segment_frames = video_frames[start_frame : end_frame + 1]
             adjusted_points_frame_idx = points_frame_index - start_frame
             
             # Run video inference on segment with reverse=True
-            segment_results = self.video_inference(segment_frames, points, adjusted_points_frame_idx, reverse=True)
+            segment_results = self.video_inference(
+                segment_frames, points, adjusted_points_frame_idx, reverse=True
+            )
             
             # Map results back to original frame indices
             final_results = {}

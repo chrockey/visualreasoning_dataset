@@ -5,43 +5,39 @@ from transformers import AutoModelForCausalLM
 
 def build_object_extraction_prompt(instruction: str) -> str:
     return f"""
-    You are a tool that extracts the main manipulated objects from robot manipulation instructions.
+You are a tool that extracts the main manipulated object from robot manipulation instructions.
 
-    - The "main manipulated objects" is the physical objects the robot is supposed to grasp, move, push, pull, pick up, or place.
-    - Ignore locations, surfaces, containers, and reference objects (tables, shelves, drawers, boxes, rooms, positions).
-    - Ignore adjectives that are not needed to identify the object category (e.g., "red cup" -> "cup", "blue mug" -> "mug").
-    - Fix minor typos if needed.
-    - Output only the noun phrase for the main manipulated object.
-    - Use lowercase, no articles, no punctuation, no extra words.
-    - If multiple main manipulated objects exists, separate with dot.
+- The "main manipulated object" is the physical object the robot is supposed to grasp, move, push, pull, pick up, or place.
+- Ignore locations, surfaces, containers, and reference objects (tables, shelves, drawers, boxes, rooms, positions).
+- Ignore adjectives that are not needed to identify the object category (e.g., "red cup" -> "cup", "blue mug" -> "mug").
+- Fix minor typos if needed.
+- Output only the noun phrase for the main manipulated object.
+- Use lowercase, no articles, no punctuation, no extra words.
 
-    Examples:
-    Instruction: "Move the moka pot to the right side of the drawer."
-    Answer: moka pot
+Examples:
+Instruction: "Move the moka pot to the right side of the drawer."
+Answer: moka pot
 
-    Instruction: "Pick up the red mug on the table."
-    Answer: mug
+Instruction: "Pick up the red mug on the table."
+Answer: mug
 
-    Instruction: "Place the cereal box inside the cupboard."
-    Answer: cereal box
+Instruction: "Place the cereal box inside the cupboard."
+Answer: cereal box
 
-    Instruction: "Push the chair closer to the desk."
-    Answer: chair
+Instruction: "Push the chair closer to the desk."
+Answer: chair
 
-    Instruction: "Open the fridge door."
-    Answer: fridge door
+Instruction: "Open the fridge door."
+Answer: fridge door
 
-    Instruction: "Move the towel from the bed to the chair."
-    Answer: towel
+Instruction: "Move the towel from the bed to the chair."
+Answer: towel
 
-    Instruction: "Add lids onto four cups placed on a wooden table with a red background."
-    Answer: lid. cup
+Now extract the main manipulated object.
 
-    Now extract the main manipulated objects.
-
-    Instruction: "{instruction}"
-    Answer:
-    """
+Instruction: "{instruction}"
+Answer:
+"""
 
 class Gemma:
     def __init__(self, model_id: str):
