@@ -152,11 +152,11 @@ class AffordanceType1Pipeline(BasePipeline):
                     )
 
                     bbox = obj_info.get('bbox', None)
-                    img_width = frames.shape[2]
-                    img_height = frames.shape[1]
                     if bbox is not None:
                         # SAM3 returns normalized coordinates [x, y, w, h] in range [0, 1]
                         # Convert to pixel coordinates and then to [x_min, y_min, x_max, y_max]
+                        img_width = frames.shape[2]
+                        img_height = frames.shape[1]
                         bbox = [
                             int(bbox[0] * img_width),  # x_min
                             int(bbox[1] * img_height),  # y_min
