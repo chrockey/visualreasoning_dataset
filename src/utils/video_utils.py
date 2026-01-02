@@ -10,7 +10,6 @@ def create_video_from_images(image_folder, output_video_path, frame_rate=25):
     image_files = [f for f in os.listdir(image_folder) 
                    if os.path.splitext(f)[1] in valid_extensions]
     image_files.sort()  # sort the files in alphabetical order
-    print(image_files)
     if not image_files:
         raise ValueError("No valid image files found in the specified folder.")
     

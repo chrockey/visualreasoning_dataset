@@ -1,19 +1,13 @@
 # AffordanceType1Pipeline Configuration
-dataset:
-  name: egodex  # one of: egodex, oxe, agibotworld, holoassist
-  dir: ""  # Empty string uses dataset's default directory
-
 hand_only: true
-text_prompt: "robot arm"  # Direct text prompt for SAM3 or GroundingDINO
-
-# Debug and visualization options
-debug: true  # Enable debug mode: visualization, debug logs, etc.
-output_dir: "output"  # Output directory name for saving results
+text_prompt: "robot arm" 
+debug: true  
+output_dir: "output" 
 
 # Model configurations
 gemma:
-  model_id: google/gemma-2-2b-it  # Model for extracting main manipulated object
+  model_id: google/gemma-2-2b-it  
 
 sam3:
-  model_id: facebook/sam3  # Hugging Face repo for SAM3 model
+  model_id: facebook/sam3  
   gpus_to_use: [0]  # null uses all available GPUs, or specify list like [0, 1]

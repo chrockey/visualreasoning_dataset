@@ -17,9 +17,6 @@ class CommonUtils:
         try: 
             if not os.path.exists(path):
                 os.makedirs(path, exist_ok=True)
-                print(f"Path '{path}' did not exist and has been created.")
-            else:
-                print(f"Path '{path}' already exists.")
         except Exception as e:
             print(f"An error occurred while creating the path: {e}")
 
@@ -109,8 +106,6 @@ class CommonUtils:
             
             output_image_path = os.path.join(output_path, raw_image_name)
             cv2.imwrite(output_image_path, annotated_frame)
-            if verbose:
-                print(f"Annotated image saved as {output_image_path}")
 
     @staticmethod
     def draw_masks_and_box(raw_image_path, mask_path, json_path, output_path):
@@ -159,8 +154,6 @@ class CommonUtils:
                 output_image_path = os.path.join(output_path, raw_image_name)
                 cv2.imwrite(output_image_path, output_image)
 
-                print(f"Annotated image saved as {output_image_path}")
-
     @staticmethod
     def random_color():
         """random color generator"""
@@ -187,7 +180,6 @@ class CommonUtils:
         # Structure: {object_id: [(frame_idx, centroid_x, centroid_y), ...]}
         object_centroid_history = {}
 
-        print("Loading centroid data from JSON files...")
         for frame_idx, frame_name in enumerate(frame_names):
             json_file = os.path.join(json_data_dir, "mask_" + frame_name.split(".")[0] + ".json")
 
@@ -215,8 +207,6 @@ class CommonUtils:
 
         # Generate unique colors for each object
         object_colors = {obj_id: CommonUtils.random_color() for obj_id in object_centroid_history.keys()}
-
-        print(f"Drawing visual traces for {len(frame_names)} frames...")
         for frame_idx, frame_name in enumerate(frame_names):
             # Load original frame
             frame_path = os.path.join(frame_dir, frame_name)

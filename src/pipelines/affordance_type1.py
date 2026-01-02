@@ -11,7 +11,7 @@ from src.models.sam3_video_tracker import SAM3VideoTracker
 from src.utils.mask_dictionary_model import MaskDictionaryModel, ObjectInfo
 from src.utils.common_utils import CommonUtils
 
-from .base import BasePipeline, load_config, load_dataset_from_config
+from .base import BasePipeline, load_config
 
 
 class AffordanceType1Pipeline(BasePipeline):
@@ -45,7 +45,6 @@ class AffordanceType1Pipeline(BasePipeline):
         frames: np.ndarray,
         description: str,
         vis_dir: str,
-        data_dict: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Track all objects mentioned in text prompt.
@@ -57,8 +56,7 @@ class AffordanceType1Pipeline(BasePipeline):
             main_object: Main object name
             text_prompt: Text prompt containing all objects to track
             vis_dir: Directory to save visualizations
-            data_dict: Additional data
-
+            
         Returns:
             Results dictionary with per-frame masks and object tracking info
         """
@@ -74,12 +72,10 @@ class AffordanceType1Pipeline(BasePipeline):
         CommonUtils.creat_dirs(result_dir)
 
         # Save frames to directory
-        print("Saving frames to temporary directory...")
         frame_names = self.video_tracker.save_frames_to_directory(frames, frame_dir)
         frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 
         # Initialize video predictor state
-        print(f"Initializing video predictor...")
         inference_state = self.video_tracker.init_state(
             video_path=frame_dir
         )
@@ -193,7 +189,6 @@ class AffordanceType1Pipeline(BasePipeline):
         results = []
         for frame_idx in range(len(frames)):
             frame_name = f"{frame_idx:05d}"
-            mask_path = os.path.join(mask_data_dir, f"mask_{frame_name}.npy")
             json_path = os.path.join(json_data_dir, f"mask_{frame_name}.json")
             frame_result = {
                 "frame_idx": frame_idx,
@@ -245,9 +240,7 @@ class AffordanceType1Pipeline(BasePipeline):
         
         # Create save directory for visualizations
         save_dir = self.config.get("save_dir", ".")
-        output_dir = self.config.get("output_dir", "visualizations")
-
-        # Sanitize video_name: replace "/" with "_" to avoid deep directory nesting
+        output_dir = self.config.get("output_dir", "output")
         sanitized_video_name = video_name.replace("/", "_")
 
         if dataset_name:
@@ -256,20 +249,8 @@ class AffordanceType1Pipeline(BasePipeline):
             vis_dir = os.path.join(save_dir, output_dir, sanitized_video_name, f"segment_{segment_idx}")
         os.makedirs(vis_dir, exist_ok=True)
 
-        # Save description text file
-        description_path = os.path.join(vis_dir, "description.txt")
-        with open(description_path, 'w') as f:
-            f.write(f"Description: {description}\n")
-            f.write(f"Segment: {segment_idx}\n")
-            f.write(f"Frame Range: [{start_frame}:{end_frame}] (inclusive)\n")
-
-        # Build data_dict for this segment
-        segment_data_dict = {
-            "video_name": f"{video_name}/segment_{segment_idx}"
-        }
-
         segment_result = self._process_visual_trace(
-            segment_frames, description, vis_dir, segment_data_dict
+            segment_frames, description, vis_dir
         )
 
         # Add segment metadata
@@ -327,68 +308,19 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Test AffordanceType1 pipeline")
     parser.add_argument(
-        "--index",
-        type=int,
-        default=0,
-        help="Index of video to process (default: 0)"
-    )
-    parser.add_argument(
         "-s", "--segment-index",
         type=int,
         default=None,
         help="Process only a specific segment index. If not provided, processes all segments (default: None)"
-    )
-    parser.add_argument(
-        "-d", "--dataset-name",
-        type=str,
-        default=None,
-        help="Override dataset name from config (e.g., egodex, oxe, agibotworld, holoassist)"
-    )
-    parser.add_argument(
-        "--dataset-dir",
-        type=str,
-        default=None,
-        help="Override dataset directory from config"
-    )
-    parser.add_argument(
-        "--mode",
-        type=str,
-        default="visual_trace_sam3",
-        help="Override mode from config"
     )
     args = parser.parse_args()
 
     # Load pipeline configuration and create pipeline
     config = load_config("affordance_type1")
 
-    # Override dataset config if arguments provided
-    if args.dataset_name is not None:
-        if "dataset" not in config:
-            config["dataset"] = {}
-        config["dataset"]["name"] = args.dataset_name
-
-    if args.dataset_dir is not None:
-        if "dataset" not in config:
-            config["dataset"] = {}
-        config["dataset"]["dir"] = args.dataset_dir
-
-    if args.mode is not None:
-        config["mode"] = args.mode
-
-    pipeline = AffordanceType1Pipeline(config)
-
-    # Load dataset from config
-    print("Loading dataset from config...")
-    dataset = load_dataset_from_config(config)
-
-    # Get video sample
-    data_dict = dataset[args.index]
-    print(f"Testing pipeline with video: {data_dict['video_name']}")
-    print(f"Frames shape: {data_dict['frames'].shape}")
-    print(f"Total segments: {len(data_dict['descriptions'])}")
-    print(f"Descriptions: {data_dict['descriptions']}")
-
-    # Filter to specific segment if requested
+    from src.datasets.agibotworld import AgiBotWorldDataset
+    ds = AgiBotWorldDataset()
+    data_dict = ds[1]
     if args.segment_index is not None:
         if args.segment_index >= len(data_dict['descriptions']):
             print(f"Error: Segment index {args.segment_index} out of range (0-{len(data_dict['descriptions'])-1})")
@@ -398,6 +330,8 @@ if __name__ == "__main__":
         # Keep only the selected segment
         data_dict['descriptions'] = [data_dict['descriptions'][args.segment_index]]
 
+    pipeline = AffordanceType1Pipeline(config)
+    
     # Run pipeline
     print("\nRunning affordance type1 pipeline...")
     results = pipeline(data_dict, save_dir=".")
@@ -408,11 +342,9 @@ if __name__ == "__main__":
     sanitized_video_name = data_dict['video_name'].replace("/", "_")
     results_dir = os.path.join(".", output_dir, dataset_name, sanitized_video_name)
     os.makedirs(results_dir, exist_ok=True)
-
     results_path = os.path.join(results_dir, "results.json")
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
 
     print(f"\nSaved pipeline results to {results_path}")
 
-    # TODO: Resolve Out-of-memory error when processing too long videos
