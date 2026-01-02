@@ -126,6 +126,20 @@ python -m src.pipelines.affordance_type1
 python -m src.pipelines.affordance_type2
 python -m src.pipelines.visual_trace
 ```
+<details open>
+<summary>Visualize GT robot gripper trajectories</summary>
+
+- MP4 files are saved under viz/*
+- Runnable datasets
+    - [x] AgiBotWorld
+    - [ ] EgoDex
+    - [ ] HoloAssist
+    - [ ] Open X-Embodiment
+</details>
+
+```bash
+python -m src.pipelines.gt_visual_trace
+``` 
 
 ## Creating a New Pipeline
 
