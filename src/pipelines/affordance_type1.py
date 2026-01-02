@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List
 import os
 import json
 import shutil
@@ -35,50 +35,6 @@ class AffordanceType1Pipeline(BasePipeline):
             model_id=sam3_config.get("model_id", "facebook/sam3")
         )
 
-
-    def _compute_ema_centroids(
-        self,
-        all_frame_masks: Dict[int, Dict[int, Dict[str, Any]]],
-        alpha: float = 0.9
-    ) -> Dict[int, Dict[int, Tuple[float, float]]]:
-        """
-        Compute EMA smoothed centroids for each object across frames.
-
-        Args:
-            all_frame_masks: Per-frame mask data from SAM3
-                {frame_idx: {obj_id: {'mask': tensor, 'bbox': list, ...}}}
-            alpha: EMA smoothing factor (0 < alpha <= 1).
-                   Higher values follow raw centroid more closely.
-
-        Returns:
-            {frame_idx: {obj_id: (ema_cx, ema_cy)}}
-        """
-        frame_indices = sorted(all_frame_masks.keys())
-        ema_centroids = {}
-        prev_ema = {}  # {obj_id: (ema_cx, ema_cy)}
-
-        for frame_idx in frame_indices:
-            ema_centroids[frame_idx] = {}
-            for obj_id, obj_data in all_frame_masks[frame_idx].items():
-                bbox = obj_data.get('bbox')
-                if bbox is None:
-                    continue
-
-                # Calculate raw centroid from bbox [x, y, w, h] (normalized)
-                # Note: bbox from SAM3 is normalized [x, y, w, h]
-                cx = bbox[0] + bbox[2] / 2  # x + w/2
-                cy = bbox[1] + bbox[3] / 2  # y + h/2
-
-                if obj_id in prev_ema:
-                    ema_cx = alpha * cx + (1 - alpha) * prev_ema[obj_id][0]
-                    ema_cy = alpha * cy + (1 - alpha) * prev_ema[obj_id][1]
-                else:
-                    ema_cx, ema_cy = cx, cy  # First frame: EMA = raw
-
-                ema_centroids[frame_idx][obj_id] = (ema_cx, ema_cy)
-                prev_ema[obj_id] = (ema_cx, ema_cy)
-
-        return ema_centroids
 
     def preprocess(self, data_dict: Dict[str, Any]):
         """Prepare input data for processing."""
@@ -160,12 +116,11 @@ class AffordanceType1Pipeline(BasePipeline):
             propagation_direction="forward"
         )
 
-        # Step 2.5: Compute EMA smoothed centroids
-        print("\n=== Computing EMA centroids ===")
-        ema_centroids = self._compute_ema_centroids(all_frame_masks, alpha=self.ema_alpha)
-
-        # Step 3: Save masks and metadata
+        # Step 3: Build frame mask models and compute centroids
         print("\n=== Saving masks and metadata ===")
+        frame_mask_models = {}  # {frame_idx: MaskDictionaryModel}
+        mask_images = {}  # {frame_idx: mask_img tensor}
+
         for frame_idx in range(len(frame_names)):
             frame_name = frame_names[frame_idx].split(".")[0]
             frame_masks_dict = all_frame_masks.get(frame_idx, {})
@@ -210,21 +165,39 @@ class AffordanceType1Pipeline(BasePipeline):
                             int((bbox[1] + bbox[3]) * img_height)  # y_max = (y + height) * img_height
                         ]
                     obj_info_model.update_box(bbox)
-
-                    # Apply EMA centroid (convert from normalized to pixel coordinates)
-                    if frame_idx in ema_centroids and obj_id in ema_centroids[frame_idx]:
-                        ema_cx, ema_cy = ema_centroids[frame_idx][obj_id]
-                        obj_info_model.ema_centroid_x = ema_cx * img_width
-                        obj_info_model.ema_centroid_y = ema_cy * img_height
-
                     frame_mask_model.labels[obj_id+1] = obj_info_model
 
-                # Save JSON and mask
-                json_data_path = os.path.join(json_data_dir, f"mask_{frame_name}.json")
-                with open(json_data_path, "w") as f:
-                    json.dump(frame_mask_model.to_dict(), f)
-                np.save(os.path.join(mask_data_dir, f"mask_{frame_name}.npy"),
-                    mask_img.numpy().astype(np.uint16))
+                frame_mask_models[frame_idx] = frame_mask_model
+                mask_images[frame_idx] = mask_img
+
+        # Step 3.5: Apply EMA smoothing to centroids
+        print("\n=== Computing EMA centroids ===")
+        prev_ema = {}  # {obj_id: (ema_cx, ema_cy)}
+        alpha = self.ema_alpha
+
+        for frame_idx in sorted(frame_mask_models.keys()):
+            frame_mask_model = frame_mask_models[frame_idx]
+            for obj_id, obj_info in frame_mask_model.labels.items():
+                cx, cy = obj_info.centroid_x, obj_info.centroid_y
+
+                if obj_id in prev_ema:
+                    ema_cx = alpha * cx + (1 - alpha) * prev_ema[obj_id][0]
+                    ema_cy = alpha * cy + (1 - alpha) * prev_ema[obj_id][1]
+                else:
+                    ema_cx, ema_cy = cx, cy  # First frame: EMA = raw
+
+                obj_info.ema_centroid_x = ema_cx
+                obj_info.ema_centroid_y = ema_cy
+                prev_ema[obj_id] = (ema_cx, ema_cy)
+
+        # Step 3.6: Save JSON and mask files
+        for frame_idx, frame_mask_model in frame_mask_models.items():
+            frame_name = frame_names[frame_idx].split(".")[0]
+            json_data_path = os.path.join(json_data_dir, f"mask_{frame_name}.json")
+            with open(json_data_path, "w") as f:
+                json.dump(frame_mask_model.to_dict(), f)
+            np.save(os.path.join(mask_data_dir, f"mask_{frame_name}.npy"),
+                mask_images[frame_idx].numpy().astype(np.uint16))
 
         # Step 4: Visualize results (only if debug mode is enabled)
         if self.debug:
