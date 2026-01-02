@@ -139,6 +139,8 @@ class ObjectInfo:
     y2:int = 0
     centroid_x:float = 0.0
     centroid_y:float = 0.0
+    ema_centroid_x:float = None
+    ema_centroid_y:float = None
 
     def get_mask(self):
         return self.mask
@@ -191,5 +193,7 @@ class ObjectInfo:
             "x2": self.x2,
             "y2": self.y2,
             "centroid_x": self.centroid_x,
-            "centroid_y": self.centroid_y
+            "centroid_y": self.centroid_y,
+            "ema_centroid_x": self.ema_centroid_x,
+            "ema_centroid_y": self.ema_centroid_y
         }

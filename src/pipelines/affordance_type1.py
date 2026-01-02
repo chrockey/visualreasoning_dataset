@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 import os
 import json
 import shutil
@@ -20,6 +20,7 @@ class AffordanceType1Pipeline(BasePipeline):
         self.hand_only = config.get('hand_only', False)
         self.text_prompt = config.get('text_prompt', None)
         self.debug = config.get('debug', False)
+        self.ema_alpha = config.get('ema_alpha', 0.9)
         self.gemma = None
 
         # Initialize Gemma if hand only is False to extract main object
@@ -34,6 +35,50 @@ class AffordanceType1Pipeline(BasePipeline):
             model_id=sam3_config.get("model_id", "facebook/sam3")
         )
 
+
+    def _compute_ema_centroids(
+        self,
+        all_frame_masks: Dict[int, Dict[int, Dict[str, Any]]],
+        alpha: float = 0.9
+    ) -> Dict[int, Dict[int, Tuple[float, float]]]:
+        """
+        Compute EMA smoothed centroids for each object across frames.
+
+        Args:
+            all_frame_masks: Per-frame mask data from SAM3
+                {frame_idx: {obj_id: {'mask': tensor, 'bbox': list, ...}}}
+            alpha: EMA smoothing factor (0 < alpha <= 1).
+                   Higher values follow raw centroid more closely.
+
+        Returns:
+            {frame_idx: {obj_id: (ema_cx, ema_cy)}}
+        """
+        frame_indices = sorted(all_frame_masks.keys())
+        ema_centroids = {}
+        prev_ema = {}  # {obj_id: (ema_cx, ema_cy)}
+
+        for frame_idx in frame_indices:
+            ema_centroids[frame_idx] = {}
+            for obj_id, obj_data in all_frame_masks[frame_idx].items():
+                bbox = obj_data.get('bbox')
+                if bbox is None:
+                    continue
+
+                # Calculate raw centroid from bbox [x, y, w, h] (normalized)
+                # Note: bbox from SAM3 is normalized [x, y, w, h]
+                cx = bbox[0] + bbox[2] / 2  # x + w/2
+                cy = bbox[1] + bbox[3] / 2  # y + h/2
+
+                if obj_id in prev_ema:
+                    ema_cx = alpha * cx + (1 - alpha) * prev_ema[obj_id][0]
+                    ema_cy = alpha * cy + (1 - alpha) * prev_ema[obj_id][1]
+                else:
+                    ema_cx, ema_cy = cx, cy  # First frame: EMA = raw
+
+                ema_centroids[frame_idx][obj_id] = (ema_cx, ema_cy)
+                prev_ema[obj_id] = (ema_cx, ema_cy)
+
+        return ema_centroids
 
     def preprocess(self, data_dict: Dict[str, Any]):
         """Prepare input data for processing."""
@@ -115,6 +160,10 @@ class AffordanceType1Pipeline(BasePipeline):
             propagation_direction="forward"
         )
 
+        # Step 2.5: Compute EMA smoothed centroids
+        print("\n=== Computing EMA centroids ===")
+        ema_centroids = self._compute_ema_centroids(all_frame_masks, alpha=self.ema_alpha)
+
         # Step 3: Save masks and metadata
         print("\n=== Saving masks and metadata ===")
         for frame_idx in range(len(frame_names)):
@@ -149,11 +198,11 @@ class AffordanceType1Pipeline(BasePipeline):
                     )
 
                     bbox = obj_info.get('bbox', None)
+                    img_width = frames.shape[2]
+                    img_height = frames.shape[1]
                     if bbox is not None:
                         # SAM3 returns normalized coordinates [x, y, w, h] in range [0, 1]
                         # Convert to pixel coordinates and then to [x_min, y_min, x_max, y_max]
-                        img_width = frames.shape[2]
-                        img_height = frames.shape[1]
                         bbox = [
                             int(bbox[0] * img_width),  # x_min
                             int(bbox[1] * img_height),  # y_min
@@ -161,6 +210,13 @@ class AffordanceType1Pipeline(BasePipeline):
                             int((bbox[1] + bbox[3]) * img_height)  # y_max = (y + height) * img_height
                         ]
                     obj_info_model.update_box(bbox)
+
+                    # Apply EMA centroid (convert from normalized to pixel coordinates)
+                    if frame_idx in ema_centroids and obj_id in ema_centroids[frame_idx]:
+                        ema_cx, ema_cy = ema_centroids[frame_idx][obj_id]
+                        obj_info_model.ema_centroid_x = ema_cx * img_width
+                        obj_info_model.ema_centroid_y = ema_cy * img_height
+
                     frame_mask_model.labels[obj_id+1] = obj_info_model
 
                 # Save JSON and mask
