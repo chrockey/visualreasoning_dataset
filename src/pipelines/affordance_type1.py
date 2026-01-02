@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 import os
 import json
 import shutil
@@ -20,6 +20,7 @@ class AffordanceType1Pipeline(BasePipeline):
         self.hand_only = config.get('hand_only', False)
         self.text_prompt = config.get('text_prompt', None)
         self.debug = config.get('debug', False)
+        self.ema_alpha = config.get('ema_alpha', 0.9)
         self.gemma = None
 
         # Initialize Gemma if hand only is False to extract main object
@@ -117,6 +118,8 @@ class AffordanceType1Pipeline(BasePipeline):
 
         # Step 3: Save masks and metadata
         print("\n=== Saving masks and metadata ===")
+        prev_ema = {}  # {obj_id: (ema_cx, ema_cy)} for EMA smoothing
+
         for frame_idx in range(len(frame_names)):
             frame_name = frame_names[frame_idx].split(".")[0]
             frame_masks_dict = all_frame_masks.get(frame_idx, {})
@@ -161,6 +164,18 @@ class AffordanceType1Pipeline(BasePipeline):
                             int((bbox[1] + bbox[3]) * img_height)  # y_max = (y + height) * img_height
                         ]
                     obj_info_model.update_box(bbox)
+
+                    # Compute EMA centroid
+                    cx, cy = obj_info_model.centroid_x, obj_info_model.centroid_y
+                    if obj_id in prev_ema:
+                        ema_cx = self.ema_alpha * cx + (1 - self.ema_alpha) * prev_ema[obj_id][0]
+                        ema_cy = self.ema_alpha * cy + (1 - self.ema_alpha) * prev_ema[obj_id][1]
+                    else:
+                        ema_cx, ema_cy = cx, cy
+                    obj_info_model.ema_centroid_x = ema_cx
+                    obj_info_model.ema_centroid_y = ema_cy
+                    prev_ema[obj_id] = (ema_cx, ema_cy)
+
                     frame_mask_model.labels[obj_id+1] = obj_info_model
 
                 # Save JSON and mask
