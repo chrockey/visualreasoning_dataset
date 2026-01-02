@@ -8,6 +8,13 @@ Pipeline system for visual reasoning dataset annotation using Molmo and SAM2.
 ./install.sh
 ```
 
+## Supported Pipelines
+
+| Pipeline | Use Case | Command |
+|----------|----------|---------|
+| **GT Visual Trace** | With GT pose (3D→2D projection) | `python -m src.pipelines.gt_visual_trace` |
+| **Visual Trace** | Without GT pose (SAM3 video tracking) | `python -m src.pipelines.affordance_type1` |
+
 ## Supported Datasets
 
 | Dataset | Status | Additional Metadata |
