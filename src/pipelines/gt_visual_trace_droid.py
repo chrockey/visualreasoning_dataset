@@ -396,7 +396,7 @@ def run_batch(cfg: Cfg) -> None:
 
 
 def main() -> None:
-    cfg = load_cfg("/home/intern/visualreasoning_dataset/config/droid_gt_trace.yaml")
+    cfg = load_cfg("./droid_gt_trace.yaml")
     run_batch(cfg)
 
 
