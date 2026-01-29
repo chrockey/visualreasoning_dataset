@@ -504,9 +504,9 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Run AffordanceType1 pipeline on OXE")
-    parser.add_argument("--data-dir", type=str, default="/home/intern/visualreasoning_dataset/bridge_folder",
+    parser.add_argument("--data-dir", type=str, default="./bridge_folder",
                         help="OXE data root dir (your TFRecord/TFDS prepared dir)")
-    parser.add_argument("--episode-index", type=int, default=3, help="Episode index in OXEDataset")
+    parser.add_argument("--episode-index", type=int, default=0, help="Episode index in OXEDataset")
     parser.add_argument("-s", "--segment-index", type=int, default=None,
                         help="If provided, keep only that segment (after conversion; usually only 1).")
     args = parser.parse_args()
