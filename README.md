@@ -89,9 +89,9 @@ src/
 │   └── sam2.py          # Segmentation model
 ├── pipelines/           # <-- WORK HERE
 │   ├── base.py
-│   ├── affordance_type1.py
-│   ├── affordance_type2.py
-│   └── visual_trace.py
+│   ├── affordance_type_bridge.py
+│   ├── affordance_type_language_table.py
+│   └── gt_visual_trace_droid.py
 └── job_server/          # Distributed job system
     ├── server.py        # FastAPI REST server
     ├── worker.py        # Base worker class
