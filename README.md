@@ -69,7 +69,6 @@ bridge_folder/
 ├── dataset_statistics_*.json
 └── features.json                                     # Features(Observation, Action(3D translation + 3D rotation))
 
-
 ```
 
 
