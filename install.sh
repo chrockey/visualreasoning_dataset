@@ -5,11 +5,7 @@ pip install sqlalchemy sqladmin
 pip install opencv-python h5py
 pip install av
 pip install tensorflow  # For Open X-Embodiment dataset (TFRecord parsing)
-pip install --no-deps --no-build-isolation git+https://github.com/facebookresearch/sam2.git
 MAX_JOBS=64 pip -v install --no-deps --no-build-isolation flash-attn
 
 pip install hydra-core einops accelerate iopath kagglehub
 pip install typing pathlib dataclasses
-
-git clone https://github.com/facebookresearch/sam3.git
-cd sam3 && pip install -e .
