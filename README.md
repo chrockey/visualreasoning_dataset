@@ -12,8 +12,10 @@ Pipeline system for visual reasoning dataset annotation using Molmo and SAM2.
 
 | Pipeline | Use Case | Command |
 |----------|----------|---------|
-| **GT Visual Trace** | With GT pose (3D→2D projection) | `python -m src.pipelines.gt_visual_trace` |
-| **Visual Trace** | Without GT pose (SAM3 video tracking) | `python -m src.pipelines.affordance_type1` |
+| **GT Visual Trace Droid** | With GT pose (3D→2D projection) | `python -m src.pipelines.gt_visual_trace_droid` |
+| **Visual Trace Language Table** | Without GT pose (SAM3 video tracking) | `python -m src.pipelines.affordance_type_language_table` |
+| **Visual Trace Bridge** | Without GT pose (SAM3 video tracking with Gemini) | `python -m src.pipelines.affordance_type_bridge` |
+
 
 ## Supported Datasets
 
