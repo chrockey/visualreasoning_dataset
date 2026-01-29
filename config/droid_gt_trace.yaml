@@ -1,0 +1,16 @@
+# Download the dataset by copying it from the Google Cloud Storage bucket
+# gsutil -m cp -r gs://gresearch/robotics/droid_raw <path_to_your_target_dir>
+# This pipeline requires the ZED SDK to be installed 
+base_dir: "/home/intern/dataset/droid_visualreasoning/1.0.1/AUTOLab/failure/2023-07-14"
+out_dir:  "/home/intern/droid_visualreasoning_outputs/trace_videos"
+
+# All other camera IDs refer to third-person (external) viewpoint cameras
+target_mp4_ids: ["22008760", "24400334"]
+
+eye: "left"            # "left" or "right"
+rot_mode: "euler_xyz"  # pose6 rotation mode used in trajectory.h5
+trace_window: 60
+
+# Camera ID "18026681" corresponds to the camera mounted on the gripper
+arm_cam_id: "18026681_left"
+gripper_offset_id: "18026681_left_gripper_offset"

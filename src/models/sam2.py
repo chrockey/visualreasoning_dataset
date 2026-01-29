@@ -19,7 +19,7 @@ class SAM2:
         self.model_id = model_id
         self.sam = SAM2ImagePredictor.from_pretrained(
             self.model_id,
-            hydra_overrides_extra=["++model.compile_image_encoder=True"],
+            hydra_overrides_extra=["++model.compile_image_encoder=False"],
         )
         assert mask_selection_mode in [
             "highest_score",

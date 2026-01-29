@@ -37,6 +37,7 @@ class GroundedSAM2:
             self.sam2_model = build_sam2(sam2_model_config, sam2_checkpoint, device=self.device)
             self.sam2_predictor = SAM2ImagePredictor(self.sam2_model)
         else:
+
             # Use SAM2 class for HuggingFace models (reuses existing implementation)
             self.sam2_predictor = SAM2ImagePredictor.from_pretrained(
                 "facebook/sam2-hiera-large",
@@ -48,7 +49,27 @@ class GroundedSAM2:
         self.grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained(
             grounding_model,
         ).to(self.device)
-    
+
+    # def print_gpu_mem(tag: str = ""):
+        
+    #     if not torch.cuda.is_available():
+    #         print(f"[GPU MEM][{tag}] CUDA not available")
+    #         return
+
+    #     device = torch.cuda.current_device()
+    #     allocated = torch.cuda.memory_allocated(device) / 1024**2
+    #     reserved  = torch.cuda.memory_reserved(device) / 1024**2
+    #     total     = torch.cuda.get_device_properties(device).total_memory / 1024**2
+    #     free_est  = total - reserved
+
+    #     print(
+    #         f"[GPU MEM][{tag}] "
+    #         f"allocated={allocated:.1f}MB | "
+    #         f"reserved={reserved:.1f}MB | "
+    #         f"free(est)={free_est:.1f}MB | "
+    #         f"total={total:.1f}MB"
+    #     )
+
     def _preprocess_image(
         self,
         image: Union[np.ndarray, Image.Image],

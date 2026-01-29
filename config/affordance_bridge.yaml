@@ -1,15 +1,16 @@
 # AffordanceType1Pipeline Configuration
-hand_only: true
-text_prompt: "robot arm"
 debug: true
+# Optional text prompt
+text_prompt1: "Robot Arm"
+text_prompt2: "Black Object"
 output_dir: "output"
-
 # EMA smoothing for centroid trajectory
 ema_alpha: 0.9  # EMA smoothing factor (0 < alpha <= 1), higher = follows raw more closely
-
 # Model configurations
-gemma:
-  model_id: google/gemma-2-2b-it
+gemini:
+  api_key: ""     
+  model_name: "gemini-3-pro-preview"
+
 
 sam3:
   model_id: facebook/sam3
