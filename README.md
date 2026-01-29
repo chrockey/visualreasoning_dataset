@@ -33,76 +33,47 @@ All datasets inherit from `BaseDataset` and provide:
 - `description`: Task description string
 - `metadata`: Dataset-specific annotations and additional data
 
-### Using Datasets
+## Dataset Structure
 
-```python
-from src.datasets.egodex import EgoDexDataset
-from src.datasets.oxe import OXEDataset
-from src.datasets.agibotworld import AgiBotWorldDataset
-from src.datasets.holoassist import HoloAssistDataset
-
-# EgoDex: Egocentric hand manipulation videos
-dataset = EgoDexDataset()  # Default: vla-dataset-samples/egodex
-print(f"Videos: {len(dataset)}")
-data = dataset[0]
-# data['video_name']: "part1/add_remove_lid/0"
-# data['frames']: (288, 1080, 1920, 3)
-# data['descriptions]: 
-# [(0, 287, 'Add lids onto four cups placed on a wooden table with a red background.')]
-# data['metadata']: camera, MANO hand poses, transforms
-
-# Open X-Embodiment: Robot manipulation episodes
-dataset = OXEDataset()  # Default: vla-dataset-samples/open-x-embodiment
-print(f"Episodes: {len(dataset)}")
-data = dataset[0]
-# data['video_name']: "asu_table_top_converted_externally_to_rlds/00003/0"
-#                     {dataset_name}/{shard_id}/{episode_in_shard}
-# data['frames']: (3225, 256, 256, 3)
-# data['descriptions]: 
-# [(0, 3224, 'Interact with the objects in diverse but meaningful ways.')]
-# data['metadata']['state']: robot joint states
-# data['metadata']['action']: robot actions
-# data['metadata']['language_embedding']: 512-dim embedding
-# data['metadata']['tfrecord_info']: shard tracking info for annotations
-
-# AgiBotWorld-Beta: Bimanual manipulation dataset
-dataset = AgiBotWorldDataset()
-print(f"Episodes: {len(dataset)}")
-data = dataset[0]
-# data['frames']: (1295, 480, 640, 3)
-# data['descriptions']:
-# [(36, 187, 'Retrieve cucumber from the shelf.'),
-#  (187, 426, 'Place the held cucumber into the plastic bag in the shopping cart.'),
-#  (426, 591, 'Retrieve tomato from the shelf.'),
-#  (591, 788, 'Place the held tomato into the plastic bag in the shopping cart.'),
-#  (788, 956, 'Retrieve corn from the shelf.'),
-#  (956, 1232, "Place the held corn into the shopping cart's plastic bag.")]
-# data['metadata']['hand_left_frames]: frames from hand-left cam
-# data['metadata']['hand_right_frames]: frames from hand-right cam
-# data['metadata']['action_config']: action text, skill(pick,place,..)
-# data['metadata']['proprio_stats]: effector (orientation, velocity, ..)
-
-# HoloAssist: Egocentric human interaction dataset
-dataset = HoloAssistDataset()
-print(f"Videos: {len(dataset)}")
-data = dataset[0]
-# data['frames]: (9933, 504, 896, 3)
-# data['descriptions']
-# [(268, 691, 'The student grabs the GoPro.'),
-#  (731, 1620, 'The student changes the battery for the GoPro.'),
-#  (1672, 7444, 'The student opens the GoPro.'),
-#  (7496, 7667, 'The student turns on their GoPro.'),
-#  (7685, 7957, 'The student turns off the gopro.'),
-#  (7988, 8604, 'The student assembles the mounting_peg.'),
-#  (8679, 8864, 'The student disassemble the mounting_peg.'),
-#  (8883, 9526, 'The student assemble handheld_grip.'),
-#  (9543, 9896, 'The students disassemble the handheld_grip.')]
-# data['metadata']['depth']: Depth
-# data['metadata']['hands_left']: Hand pose (left)
-# data['metadata']['hands_right']: Hand pose (right)
-# data['metadata']['pose_sync']: Camera pose
+### 1️⃣ DROID (GT-based Visual Trace)
+```
+droid_dataset/
+└── date/                   # Recording date
+    ├──recordings/
+    │  ├──MP4/
+    │  │  ├──18026681.mp4   # Gripper–mounted camera
+    │  │  ├──22008760.mp4   # External camera (viewpoint 1)
+    │  │  ├──24400334.mp4   # External camera (viewpoint 2)
+    │  ├──SVO/              # ZED camera recordings (used to extract intrinsics)
+    │  │  ├──18026681.svo   
+    │  │  ├──22008760.svo
+    │  │  ├──24400334.svo
+    ├──trajectory.h5        # Camera extrinsic parameters (trajectory)
 
 ```
+### 2️⃣ Language Table (SAM3, No GT Pose)
+```
+language_table_dataset/
+├── language_table-train.tfrecord-00000-of-01024      # Sharded TFRecord file containing training episodes
+├── dataset_info.json
+├── dataset_statistics_*.json
+└── features.json                                     # Features(Observation , Action(2D Cartesian))
+
+```
+
+### 3️⃣ Bridge (SAM3 + Gemini, No GT Pose)
+```
+bridge_folder/
+├── bridge_oxe.tfrecord-00000-of-01024                # Sharded TFRecord file containing training episodes
+├── dataset_info.json
+├── dataset_statistics_*.json
+└── features.json                                     # Features(Observation, Action(3D translation + 3D rotation))
+
+
+```
+
+
+
 
 ## Project Structure
 
@@ -138,7 +109,7 @@ python -m src.pipelines.affordance_type_bridge
 <details open>
 <summary>Visualize GT robot gripper trajectories</summary>
 
-- MP4 files are saved under viz/*
+- MP4 files are saved under viz_video/*
 - Runnable datasets
     - [ ] AgiBotWorld
     - [ ] EgoDex
@@ -150,41 +121,3 @@ python -m src.pipelines.affordance_type_bridge
 python -m src.pipelines.gt_visual_trace_droid
 ``` 
 
-## Creating a New Pipeline
-
-```python
-# src/pipelines/my_pipeline.py
-from typing import Any, Dict
-from src.models.molmo import Molmo
-from src.models.sam2 import SAM2
-from .base import BasePipeline
-
-
-class MyPipeline(BasePipeline):
-    def __init__(self, threshold: float = 0.5):
-        super().__init__()
-        self.threshold = threshold
-        self.molmo = Molmo()
-        self.sam2 = SAM2()
-
-    def preprocess(self, data_dict: Dict[str, Any]):
-        return data_dict
-
-    def process(self, data_dict: Dict[str, Any]):
-        return {"result": "..."}
-
-
-if __name__ == "__main__":
-    pipeline = MyPipeline(threshold=0.7)
-    result = pipeline({"video_path": "/path/to/test.mp4"}, save_dir="/tmp/test")
-    print(result)
-```
-
-Then register in `src/job_server/pipeline_worker.py`:
-
-```python
-PIPELINES = {
-    ...
-    "my_pipeline": "src.pipelines.my_pipeline.MyPipeline",
-}
-```
