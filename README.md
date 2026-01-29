@@ -38,17 +38,17 @@ All datasets inherit from `BaseDataset` and provide:
 ### 1️⃣ DROID (GT-based Visual Trace)
 ```
 droid_dataset/
-└── date/                   # Recording date
+├── date/                   # Recording date
     ├──recordings/
     │  ├──MP4/
     │  │  ├──18026681.mp4   # Gripper–mounted camera
     │  │  ├──22008760.mp4   # External camera (viewpoint 1)
-    │  │  ├──24400334.mp4   # External camera (viewpoint 2)
+    │  │  └──24400334.mp4   # External camera (viewpoint 2)
     │  ├──SVO/              # ZED camera recordings (used to extract intrinsics)
     │  │  ├──18026681.svo   
     │  │  ├──22008760.svo
-    │  │  ├──24400334.svo
-    ├──trajectory.h5        # Camera extrinsic parameters (trajectory)
+    │  │  └──24400334.svo
+    └──trajectory.h5        # Camera extrinsic parameters (trajectory)
 
 ```
 ### 2️⃣ Language Table (SAM3, No GT Pose)
@@ -86,7 +86,7 @@ src/
 │   └── oxe.py           # Open X-Embodiment (robot manipulation)
 ├── models/              # Model wrappers
 │   ├── molmo.py         # VLM for point extraction
-│   └── sam2.py          # Segmentation model
+│   └── sam2.py          # Segmentation model    
 ├── pipelines/           # <-- WORK HERE
 │   ├── base.py
 │   ├── affordance_type_bridge.py
