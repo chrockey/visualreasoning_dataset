@@ -49,7 +49,6 @@ droid_dataset/
         │   ├── 22008760.svo
         │   └── 24400334.svo
         └── trajectory.h5             # Camera extrinsic parameters (trajectory)
-
 ```
 ### 2️⃣ Language Table (SAM3, No GT Pose)
 ```
@@ -58,7 +57,6 @@ language_table_dataset/
 ├── dataset_info.json
 ├── dataset_statistics_*.json
 └── features.json                                     # Features(Observation , Action(2D Cartesian))
-
 ```
 
 ### 3️⃣ Bridge (SAM3 + Gemini, No GT Pose)
@@ -68,7 +66,6 @@ bridge_folder/
 ├── dataset_info.json
 ├── dataset_statistics_*.json
 └── features.json                                     # Features(Observation, Action(3D translation + 3D rotation))
-
 ```
 
 
