@@ -13,7 +13,7 @@ Pipeline system for visual reasoning dataset annotation using Molmo and SAM2.
 | Pipeline                    | Use Case                                   | Command                                             |
 |-----------------------------|--------------------------------------------|-----------------------------------------------------|
 | **GT Visual Trace Droid**    | With GT pose (3D→2D projection)             | `python -m src.pipelines.gt_visual_trace_droid`     |
-| **Visual Trace Language Table** | Without GT pose (SAM3 video tracking) | `python -m src.pipelines.affordance_type_language_table` |
+| **Visual Trace Language Table** | Without GT pose (SAM3 video tracking) | `python -m   src.pipelines.affordance_type_language_table` |
 | **Visual Trace Bridge**      | Without GT pose (SAM3 video tracking with Gemini) | `python -m src.pipelines.affordance_type_bridge`    |
 
 
@@ -132,23 +132,22 @@ src/
 ## Testing Pipelines
 
 ```bash
-python -m src.pipelines.affordance_type1
-python -m src.pipelines.affordance_type2
-python -m src.pipelines.visual_trace
+python -m src.pipelines.affordance_type_language_table
+python -m src.pipelines.affordance_type_bridge
 ```
 <details open>
 <summary>Visualize GT robot gripper trajectories</summary>
 
 - MP4 files are saved under viz/*
 - Runnable datasets
-    - [x] AgiBotWorld
+    - [ ] AgiBotWorld
     - [ ] EgoDex
     - [ ] HoloAssist
-    - [ ] Open X-Embodiment
+    - [x] Open X-Embodiment
 </details>
 
 ```bash
-python -m src.pipelines.gt_visual_trace
+python -m src.pipelines.gt_visual_trace_droid
 ``` 
 
 ## Creating a New Pipeline
