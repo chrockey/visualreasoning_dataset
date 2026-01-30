@@ -1,6 +1,7 @@
 # Visual Reasoning Annotation
 
-Pipeline system for visual reasoning dataset annotation using Molmo and SAM2.
+Pipeline system for visual reasoning dataset annotation using SAM3 Tracking, Gemini.
+⚠️ Note: The SAM3 Git module has been modified for this project; please refer to the code included in this repository rather than the upstream implementation.
 
 ## Installation
 
