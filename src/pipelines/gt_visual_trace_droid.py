@@ -1,404 +1,254 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple, List
 from pathlib import Path
-from typing import List, Optional, Tuple
 
-import cv2
-import h5py
 import numpy as np
-import yaml
-import pyzed.sl as sl
-import json
+import cv2
 
-# ============================================================
-# Config
-# ============================================================
-@dataclass(frozen=True)
-class Cfg:
-    base_dir: Path
-    out_dir: Path
-    target_mp4_ids: List[str]
-    eye: str
-    rot_mode: str
-    trace_window: int
-    arm_cam_id: str
-    gripper_offset_id: str
+from .base import BasePipeline, load_config
+from ..utils.gt_visual_trace import (
+    project_camera_trajectories_to_2d,
+    generate_trajectory_visualization_video,
+)
 
 
-def load_cfg(path: str | Path) -> Cfg:
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    return Cfg(
-        base_dir=Path(raw["base_dir"]),
-        out_dir=Path(raw["out_dir"]),
-        target_mp4_ids=[str(x) for x in raw.get("target_mp4_ids", [])],
-        eye=str(raw.get("eye", "left")),
-        rot_mode=str(raw.get("rot_mode", "euler_xyz")),
-        trace_window=int(raw.get("trace_window", 60)),
-        arm_cam_id=str(raw["arm_cam_id"]),
-        gripper_offset_id=str(raw["gripper_offset_id"]),
-    )
+class GTVisualTracePipeline(BasePipeline):
+    def __init__(self, config: Dict[str, Any], verbose: bool = True, suffix: str = "base"):
+        super().__init__(config)
+        self.verbose = verbose
+        self.trace_window = config.get("camera_trajectory", {}).get("trace_window", 60)
+        self.output_dir = config.get("camera_trajectory", {}).get("output_dir", f"viz/camera_trajectory_{suffix}")
+        self.droid_cfg = config.get("droid_gt_trace", None)
 
+    def preprocess(self, data_dict: Dict[str, Any]):
+        raise NotImplementedError
 
-# ============================================================
-# Episode discovery
-# ============================================================
-def find_episode_dirs(base_dir: Path) -> List[Path]:
-    """
-    Find episode directories under base_dir by locating 'trajectory.h5'.
-    Returns unique parent directories that contain trajectory.h5.
-    """
-    if not base_dir.exists():
-        raise FileNotFoundError(f"base_dir not found: {base_dir}")
+    # ------------------------------------------------------------
+    # DROID helpers
+    # ------------------------------------------------------------
+    def _read_mp4_frames_rgb(self, mp4_path: Path) -> np.ndarray:
+        """Read an MP4 file into a (T,H,W,3) RGB numpy array."""
+        cap = cv2.VideoCapture(str(mp4_path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open video: {mp4_path}")
 
-    traj_files = sorted(base_dir.rglob("trajectory.h5"))
-    episode_dirs = sorted({p.parent for p in traj_files})
-    return episode_dirs
+        frames = []
+        while True:
+            ok, frame_bgr = cap.read()
+            if not ok:
+                break
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            frames.append(frame_rgb)
 
+        cap.release()
+        if len(frames) == 0:
+            raise RuntimeError(f"No frames decoded from: {mp4_path}")
 
-def resolve_episode_assets(ep_dir: Path, mp4_id: str) -> tuple[Path, Path, Path]:
-    """
-    Resolve required assets for a given episode and mp4_id:
-      - trajectory.h5
-      - recordings/MP4/{mp4_id}.mp4
-      - recordings/SVO/{mp4_id}.svo
-    """
-    traj_h5 = ep_dir / "trajectory.h5"
-    mp4_path = ep_dir / "recordings" / "MP4" / f"{mp4_id}.mp4"
-    svo_path = ep_dir / "recordings" / "SVO" / f"{mp4_id}.svo"
+        return np.stack(frames, axis=0)
 
-    if not traj_h5.exists():
-        raise FileNotFoundError(f"Missing: {traj_h5}")
-    if not mp4_path.exists():
-        raise FileNotFoundError(f"Missing: {mp4_path}")
-    if not svo_path.exists():
-        raise FileNotFoundError(f"Missing: {svo_path}")
+    def _find_episode_dir_for_mp4(self, base_dir: Path, mp4_id: str) -> Optional[Path]:
+        """
+        Search for an episode directory that contains:
+          - trajectory.h5
+          - recordings/MP4/{mp4_id}.mp4
+          - recordings/SVO/{mp4_id}.svo
+        """
+        # English note: This is a fallback search when episode_dir is not provided by a dataset loader.
+        if not base_dir.exists():
+            return None
 
-    return traj_h5, mp4_path, svo_path
+        candidates = list(base_dir.rglob(f"{mp4_id}.mp4"))
+        for mp4_path in candidates:
+            # Expect .../<episode>/recordings/MP4/{id}.mp4
+            ep_dir = mp4_path.parent.parent.parent  # MP4 -> recordings -> episode
+            traj_h5 = ep_dir / "trajectory.h5"
+            svo_path = ep_dir / "recordings" / "SVO" / f"{mp4_id}.svo"
+            if traj_h5.exists() and svo_path.exists():
+                return ep_dir
 
-
-def derive_view_cam_id(mp4_id: str) -> str:
-    """
-    Dataset rule:
-      view_cam_id = "{mp4_id}_left"
-    """
-    return f"{mp4_id}_left"
-
-
-# ============================================================
-# ZED intrinsics: SVO -> fx,fy,cx,cy only
-# ============================================================
-def get_intrinsic_from_svo(
-    svo_path: Path,
-    eye: str = "left",
-    coordinate_system: sl.COORDINATE_SYSTEM = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP_X_FWD,
-) -> tuple[float, float, float, float]:
-    """
-    Open an SVO and return (fx, fy, cx, cy) for the specified eye.
-    """
-    eye = eye.lower().strip()
-    if eye not in ("left", "right"):
-        raise ValueError(f"Invalid eye: {eye} (expected 'left' or 'right')")
-
-    zed = sl.Camera()
-    init = sl.InitParameters()
-    init.set_from_svo_file(str(svo_path))
-    init.svo_real_time_mode = False
-    init.coordinate_system = coordinate_system
-
-    err = zed.open(init)
-    if err != sl.ERROR_CODE.SUCCESS:
-        raise RuntimeError(f"ZED open failed: {err} (svo={svo_path})")
-
-    cam_info = zed.get_camera_information()
-
-    # Version-tolerant access to calibration parameters
-    if hasattr(cam_info, "camera_configuration") and hasattr(cam_info.camera_configuration, "calibration_parameters"):
-        calib = cam_info.camera_configuration.calibration_parameters
-    elif hasattr(cam_info, "calibration_parameters"):
-        calib = cam_info.calibration_parameters
-    else:
-        zed.close()
-        raise AttributeError("Cannot find calibration_parameters in camera information object.")
-
-    cam = calib.left_cam if eye == "left" else calib.right_cam
-    fx, fy, cx, cy = float(cam.fx), float(cam.fy), float(cam.cx), float(cam.cy)
-
-    zed.close()
-    return fx, fy, cx, cy
-
-
-# ============================================================
-# H5 pose loading
-# ============================================================
-def load_pose_seq(h5_path: Path, key: str) -> np.ndarray:
-    """
-    Load pose sequence of shape (T, 6) from H5.
-    pose6 = [x, y, z, rx, ry, rz]
-    """
-    with h5py.File(str(h5_path), "r") as f:
-        if key not in f:
-            raise KeyError(f"[H5] key not found: {key}")
-        arr = np.array(f[key], dtype=np.float64)
-
-    if arr.ndim != 2 or arr.shape[1] != 6:
-        raise ValueError(f"[H5] expected (T,6) for {key}, got {arr.shape}")
-    return arr
-
-
-# ============================================================
-# SE(3) + projection utilities
-# ============================================================
-def euler_xyz_to_R(rx: float, ry: float, rz: float) -> np.ndarray:
-    cx, sx = np.cos(rx), np.sin(rx)
-    cy, sy = np.cos(ry), np.sin(ry)
-    cz, sz = np.cos(rz), np.sin(rz)
-
-    Rx = np.array([[1, 0, 0],
-                   [0, cx, -sx],
-                   [0, sx, cx]], dtype=np.float64)
-    Ry = np.array([[cy, 0, sy],
-                   [0, 1, 0],
-                   [-sy, 0, cy]], dtype=np.float64)
-    Rz = np.array([[cz, -sz, 0],
-                   [sz, cz, 0],
-                   [0, 0, 1]], dtype=np.float64)
-    return Rz @ Ry @ Rx
-
-
-def pose6_to_T(pose6: np.ndarray, rot_mode: str) -> np.ndarray:
-    if rot_mode != "euler_xyz":
-        raise ValueError(f"Unsupported rot_mode: {rot_mode} (expected 'euler_xyz')")
-
-    x, y, z, rx, ry, rz = map(float, pose6)
-    T = np.eye(4, dtype=np.float64)
-    T[:3, :3] = euler_xyz_to_R(rx, ry, rz)
-    T[:3, 3] = np.array([x, y, z], dtype=np.float64)
-    return T
-
-
-def world_to_cam_point(Pw: np.ndarray, T_world_cam: np.ndarray) -> np.ndarray:
-    R = T_world_cam[:3, :3]
-    t = T_world_cam[:3, 3]
-    return R.T @ (Pw - t)
-
-
-def project_point(
-    Pc: np.ndarray,
-    fx: float, fy: float, cx: float, cy: float,
-    W: int, H: int
-) -> Optional[Tuple[int, int]]:
-    X, Y, Z = Pc
-    if Z <= 1e-6:
         return None
-    u = cx + fx * (X / Z)
-    v = cy + fy * (Y / Z)
-    if 0 <= u < W and 0 <= v < H:
-        return int(u), int(v)
-    return None
 
+    def _resolve_droid_assets(self, mp4_id: str, episode_dir: Optional[Path]) -> Tuple[Path, Path, Path, str]:
+        """
+        Resolve (trajectory.h5, mp4_path, svo_path, episode_name) for DROID layout.
+        """
+        if self.droid_cfg is None:
+            raise ValueError("droid_gt_trace config is required to resolve DROID assets")
 
-# ============================================================
-# Drawing
-# ============================================================
-def draw_sliding_trajectory(frame: np.ndarray, uv_all: List[Optional[Tuple[int, int]]], idx: int, window: int) -> None:
-    start = max(0, idx - window + 1)
-    prev = None
-    for k in range(start, idx + 1):
-        uv = uv_all[k]
-        if uv is None:
-            prev = None
-            continue
-        if prev is not None:
-            cv2.line(frame, prev, uv, (0, 255, 0), 3)
-        prev = uv
+        base_dir = Path(self.droid_cfg["base_dir"])
+        if episode_dir is None:
+            episode_dir = self._find_episode_dir_for_mp4(base_dir, mp4_id)
 
-    cur = uv_all[idx]
-    if cur is not None:
-        cv2.circle(frame, cur, 9, (0, 0, 0), -1)
-        cv2.circle(frame, cur, 7, (0, 255, 0), -1)
+        if episode_dir is None:
+            raise FileNotFoundError(f"Episode dir not found for mp4_id={mp4_id} under base_dir={base_dir}")
 
+        traj_h5 = episode_dir / "trajectory.h5"
+        mp4_path = episode_dir / "recordings" / "MP4" / f"{mp4_id}.mp4"
+        svo_path = episode_dir / "recordings" / "SVO" / f"{mp4_id}.svo"
 
-# ============================================================
-# Single video render
-# ============================================================
-def render_one_video(
-    traj_h5: Path,
-    mp4_path: Path,
-    svo_path: Path,
-    out_path: Path,
-    view_cam_id: str,
-    arm_cam_id: str,
-    gripper_offset_id: str,
-    eye: str,
-    rot_mode: str,
-    trace_window: int,
-) -> None:
-    # Intrinsics from the matched SVO
-    fx, fy, cx, cy = get_intrinsic_from_svo(svo_path, eye=eye)
+        if not traj_h5.exists():
+            raise FileNotFoundError(f"Missing: {traj_h5}")
+        if not mp4_path.exists():
+            raise FileNotFoundError(f"Missing: {mp4_path}")
+        if not svo_path.exists():
+            raise FileNotFoundError(f"Missing: {svo_path}")
 
-    cap = cv2.VideoCapture(str(mp4_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video: {mp4_path}")
+        return traj_h5, mp4_path, svo_path, episode_dir.name
 
-    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
-    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    def _inject_droid_metadata(
+        self,
+        metadata: Dict[str, Any],
+        traj_h5: Path,
+        svo_path: Path,
+        mp4_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Inject droid_gt_trace config into metadata so that project_camera_trajectories_to_2d()
+        can run the DROID projection path.
+        """
+        if self.droid_cfg is None:
+            raise ValueError("droid_gt_trace config is required to inject DROID metadata")
 
-    # H5 keys
-    key_view = f"observation/camera_extrinsics/{view_cam_id}"
-    key_arm = f"observation/camera_extrinsics/{arm_cam_id}"
-    key_off = f"observation/camera_extrinsics/{gripper_offset_id}"
+        # English note: view_cam_id follows DROID convention "{mp4_id}_left" for the view camera.
+        view_cam_id = f"{mp4_id}_left"
 
-    view_pose = load_pose_seq(traj_h5, key_view)
-    arm_pose = load_pose_seq(traj_h5, key_arm)
-    off_pose = load_pose_seq(traj_h5, key_off)
+        droid_meta = {
+            "traj_h5": str(traj_h5),
+            "svo_path": str(svo_path),
+            "view_cam_id": view_cam_id,
+            "arm_cam_id": str(self.droid_cfg["arm_cam_id"]),
+            "gripper_offset_id": str(self.droid_cfg["gripper_offset_id"]),
+            "eye": str(self.droid_cfg.get("eye", "left")),
+            "rot_mode": str(self.droid_cfg.get("rot_mode", "euler_xyz")),
+        }
 
-    T = min(len(view_pose), len(arm_pose), len(off_pose), n_frames)
-    view_pose = view_pose[:T]
-    arm_pose = arm_pose[:T]
-    off_pose = off_pose[:T]
+        # Keep original metadata and just add a new key
+        metadata = dict(metadata) if metadata is not None else {}
+        metadata["droid_gt_trace"] = droid_meta
+        return metadata
 
-    # T_world_gripper = T_world_armCam @ T_armCam_gripperOffset
-    gripper_world = np.zeros((T, 3), dtype=np.float64)
-    for i in range(T):
-        T_w_arm = pose6_to_T(arm_pose[i], rot_mode)
-        T_arm_grip = pose6_to_T(off_pose[i], rot_mode)
-        T_w_grip = T_w_arm @ T_arm_grip
-        gripper_world[i] = T_w_grip[:3, 3]
+    # ------------------------------------------------------------
+    # Main process
+    # ------------------------------------------------------------
+    def process(self, data_dict: Dict[str, Any]):
+        """
+        Process video and generate camera trajectory visualization.
 
-    # Project into the view camera
-    uv_list: List[Optional[Tuple[int, int]]] = []
-    for i in range(T):
-        T_w_view = pose6_to_T(view_pose[i], rot_mode)
-        Pc = world_to_cam_point(gripper_world[i], T_w_view)
-        uv_list.append(project_point(Pc, fx, fy, cx, cy, W, H))
-        out_json_path = out_path.with_suffix(".json")
-    
-    save_uv_json(
-        out_json_path=out_json_path,
-        uv_list=uv_list,
-        W=W,
-        H=H,
-        fps=fps,
-        eye=eye,
-        trace_window=trace_window,
-        video_name=mp4_path.name,
-    )
+        DROID (hand=1) return format:
+            {
+                "head_2d": (T, 2) array,   # optional / usually NaN-filled
+                "hand_2d": (T, 2) array,   # single hand(gripper) trajectory in pixel coordinates
+                "metadata": {...}
+            }
+        """
+        metadata = data_dict.get("metadata", {}) or {}
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Decide input frames source
+        video_frames = data_dict.get("frames", None)
+        data_name = data_dict.get("video_name", "unknown")
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(out_path), fourcc, fps, (W, H))
+        # DROID path: If no frames are provided, load from MP4 on disk.
+        # English note: This keeps the pipeline compatible with loaders that do not materialize frames in memory.
+        if video_frames is None and self.droid_cfg is not None:
+            mp4_id = data_dict.get("mp4_id", None)
+            if mp4_id is None:
+                # Fallback: use stem of video_name (e.g., "24400334.mp4" -> "24400334")
+                mp4_id = Path(str(data_name)).stem
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    for i in range(T):
-        ok, frame = cap.read()
-        if not ok:
-            break
-        draw_sliding_trajectory(frame, uv_list, i, trace_window)
-        writer.write(frame)
+            ep_dir = data_dict.get("episode_dir", None) or metadata.get("episode_dir", None)
+            ep_dir = Path(ep_dir) if ep_dir is not None else None
 
-    cap.release()
-    writer.release()
+            traj_h5, mp4_path, svo_path, ep_name = self._resolve_droid_assets(mp4_id=mp4_id, episode_dir=ep_dir)
 
-    print(f"[OK] {out_path}")
+            # Read frames from MP4
+            video_frames = self._read_mp4_frames_rgb(mp4_path)
 
+            # Update naming for output organization
+            data_name = f"{ep_name}/{mp4_id}"
 
-def save_uv_json(
-    out_json_path: Path,
-    uv_list: List[Optional[Tuple[int, int]]],
-    W: int,
-    H: int,
-    fps: float,
-    eye: str,
-    trace_window: int,
-    video_name: str,
-):
-    data = {
-        "meta": {
-            "video": video_name,
-            "width": W,
-            "height": H,
-            "fps": fps,
-            "eye": eye,
-            "trace_window": trace_window,
-        },
-        "frames": []
-    }
+            # Inject DROID projection metadata
+            metadata = self._inject_droid_metadata(metadata, traj_h5=traj_h5, svo_path=svo_path, mp4_id=mp4_id)
 
-    for i, uv in enumerate(uv_list):
-        if uv is None:
-            data["frames"].append({
-                "frame_idx": i,
-                "u": None,
-                "v": None,
-                "visible": False
-            })
-        else:
-            u, v = uv
-            data["frames"].append({
-                "frame_idx": i,
-                "u": int(u),
-                "v": int(v),
-                "visible": True
-            })
+        if video_frames is None:
+            raise ValueError("data_dict must contain 'frames' or provide DROID config to load frames from disk")
 
-    out_json_path.parent.mkdir(parents=True, exist_ok=True)
-    out_json_path.write_text(
-        json.dumps(data, indent=2),
-        encoding="utf-8"
-    )
+        # Infer visualization size from actual video frames
+        # English note: Frame shape is (T, H, W, 3) in RGB format.
+        viz_height = int(video_frames.shape[1])
+        viz_width = int(video_frames.shape[2])
 
+        if self.verbose:
+            print(f"[INFO] Processing video: {data_name}")
+            print(f"[INFO] Total frames: {len(video_frames)}")
+            print(f"[INFO] Video resolution: {viz_width} x {viz_height}")
+            print(f"[INFO] Step 1: Projecting 3D trajectories to 2D...")
 
-# ============================================================
-# Batch runner (date dir -> episodes -> two mp4 ids)
-# ============================================================
-def run_batch(cfg: Cfg) -> None:
-    episodes = find_episode_dirs(cfg.base_dir)
-    if not episodes:
-        raise RuntimeError(f"No episodes found under: {cfg.base_dir}")
+        trajectory_data = project_camera_trajectories_to_2d(
+            metadata=metadata,
+            num_frames=len(video_frames),
+            viz_width=viz_width,
+            viz_height=viz_height,
+        )
 
-    cfg.out_dir.mkdir(parents=True, exist_ok=True)
+        if trajectory_data is None:
+            print("[WARNING] Failed to project trajectories (missing camera parameters or missing DROID assets)")
+            return None
 
-    for ep_dir in episodes:
-        ep_name = ep_dir.name
+        # Always generate video (not only when verbose=True)
+        output_dir = Path(self.output_dir) / data_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        traj_output_path = str(output_dir / "robot_trajectory.mp4")
 
-        for mp4_id in cfg.target_mp4_ids:
-            # Skip stereo files implicitly by targeting only exact '{id}.mp4'
-            try:
-                traj_h5, mp4_path, svo_path = resolve_episode_assets(ep_dir, mp4_id)
-            except FileNotFoundError:
-                # Not every episode has every camera; skip quietly
-                continue
+        generate_trajectory_visualization_video(
+            video_frames=video_frames,
+            trajectory_data=trajectory_data,
+            output_path=traj_output_path,
+            trace_window=self.trace_window,
+        )
 
-            view_cam_id = derive_view_cam_id(mp4_id)
-
-            # Output layout: out_dir/<episode_name>/<id>_viz_trace.mp4
-            out_path = cfg.out_dir / ep_name / f"{mp4_id}_viz_trace.mp4"
-
-            try:
-                render_one_video(
-                    traj_h5=traj_h5,
-                    mp4_path=mp4_path,
-                    svo_path=svo_path,
-                    out_path=out_path,
-                    view_cam_id=view_cam_id,
-                    arm_cam_id=cfg.arm_cam_id,
-                    gripper_offset_id=cfg.gripper_offset_id,
-                    eye=cfg.eye,
-                    rot_mode=cfg.rot_mode,
-                    trace_window=cfg.trace_window,
-                )
-            except Exception as e:
-                print(f"[WARN] failed ep={ep_name}, id={mp4_id}: {e}")
-
-
-def main() -> None:
-    cfg = load_cfg("./droid_gt_trace.yaml")
-    run_batch(cfg)
+        if self.verbose:
+            T = trajectory_data["metadata"]["num_frames"]
+            print(f"[INFO] Successfully projected {T} frames to 2D pixel coordinates")
+            print(f"[INFO]   - head_2d: {trajectory_data['head_2d'].shape}")
+            print(f"[INFO]   - hand_2d: {trajectory_data['hand_2d'].shape}")
+            print(f"[INFO] Saved: {traj_output_path}")
+            print(f"[INFO] Finished processing video {data_name}")
 
 
 if __name__ == "__main__":
-    main()
+    # DROID batch example:
+    # English note: We run the pipeline for each target_mp4_id by resolving episode assets from base_dir.
+    config = load_config("droid_gt_trace")
+    pipeline = GTVisualTracePipeline(config, verbose=True)
+
+    if "droid_gt_trace" not in config:
+        raise KeyError("Config must include 'droid_gt_trace' to run this script in DROID mode")
+
+    base_dir = Path(config["droid_gt_trace"]["base_dir"])
+    target_mp4_ids = [str(x) for x in config["droid_gt_trace"]["target_mp4_ids"]]
+
+    # English note: Iterate all episodes by discovering trajectory.h5 and pairing with target cameras.
+    traj_files = sorted(base_dir.rglob("trajectory.h5"))
+    episode_dirs = sorted({p.parent for p in traj_files})
+
+    for ep_dir in episode_dirs:
+        ep_name = ep_dir.name
+
+        for mp4_id in target_mp4_ids:
+            mp4_path = ep_dir / "recordings" / "MP4" / f"{mp4_id}.mp4"
+            svo_path = ep_dir / "recordings" / "SVO" / f"{mp4_id}.svo"
+            traj_h5 = ep_dir / "trajectory.h5"
+
+            # English note: Not every episode contains every camera, so skip missing files quietly.
+            if (not mp4_path.exists()) or (not svo_path.exists()) or (not traj_h5.exists()):
+                continue
+
+            data_dict = {
+                "frames": None,
+                "metadata": {"episode_dir": str(ep_dir)},
+                "video_name": f"{ep_name}/{mp4_id}.mp4",
+                "mp4_id": mp4_id,
+                "episode_dir": str(ep_dir),
+            }
+
+            pipeline.process(data_dict)
