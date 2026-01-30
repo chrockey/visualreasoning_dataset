@@ -35,7 +35,7 @@ All datasets inherit from `BaseDataset` and provide:
 
 ## Dataset Structure
 
-### 1️⃣ DROID (GT-based Visual Trace)
+### 1️⃣ Droid (GT-based Visual Trace)
 ```
 # Download the DROID raw dataset (required)
 gsutil -m cp -r gs://gresearch/robotics/droid_raw <path_to_your_target_dir>
