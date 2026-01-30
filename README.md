@@ -60,8 +60,6 @@ language_table_dataset/
 ```
 
 ### 3️⃣ Bridge (SAM3 + Gemini, No GT Pose)
-# Download the DROID raw dataset from Google Cloud Storage
-gsutil -m cp -r gs://gresearch/robotics/droid_raw <path_to_your_target_dir>
 ```
 bridge_folder/
 ├── bridge_oxe.tfrecord-00000-of-01024                # Sharded TFRecord file containing training episodes
@@ -69,6 +67,9 @@ bridge_folder/
 ├── dataset_statistics_*.json
 └── features.json                                     # Features(Observation, Action(3D translation + 3D rotation))
 ```
+### Download the DROID raw dataset (required)
+### gsutil -m cp -r gs://gresearch/robotics/droid_raw <path_to_your_target_dir>
+
 
 
 
