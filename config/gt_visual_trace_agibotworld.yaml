@@ -1,0 +1,7 @@
+# GT Visual Trace Pipeline for AgiBotWorld Dataset
+
+camera_trajectory:
+  trace_window: 60
+  width: 640
+  height: 480
+  output_dir: "./trace_output"

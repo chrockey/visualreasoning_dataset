@@ -1,3 +1,4 @@
+# GT Visual Trace Pipeline for DROID Dataset
 # Download the dataset by copying it from the Google Cloud Storage bucket
 # gsutil -m cp -r gs://gresearch/robotics/droid_raw <path_to_your_target_dir>
 # This pipeline requires the ZED SDK to be installed

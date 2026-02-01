@@ -1,8 +1,12 @@
-# AffordanceType1Pipeline Configuration
+# SAM3 Tracker Pipeline Configuration for Language Table
+
 debug: true
-# Optional text prompt
+
+# Text prompt for object detection
 text_prompt: "Gray object"
+
 output_dir: "output"
+
 # EMA smoothing for centroid trajectory
 ema_alpha: 0.9  # EMA smoothing factor (0 < alpha <= 1), higher = follows raw more closely
 
