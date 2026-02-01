@@ -43,7 +43,7 @@ class GroundedSAM2:
             # Use SAM2 class for HuggingFace models (reuses existing implementation)
             self.sam2_predictor = SAM2ImagePredictor.from_pretrained(
                 "facebook/sam2-hiera-large",
-                hydra_overrides_extra=["++model.compile_image_encoder=True"],
+                hydra_overrides_extra=["++model.compile_image_encoder=False"],
             )
             
         # Build Grounding DINO from HuggingFace

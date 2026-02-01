@@ -156,7 +156,9 @@ class SAM3VideoTracker:
         inference_state: Dict[str, Any],
         frame_idx: int,
         text_prompt: str,
-        obj_id: Optional[int] = None
+        obj_id: Optional[int] = None,
+        # bounding_boxes: Optional[List[List[float]]] = None,
+        # bounding_box_labels: Optional[List[int]] = None
     ) -> Tuple[int, List[int], Dict]:
         """
         Add a new mask using text prompt at a specific frame.
@@ -172,11 +174,14 @@ class SAM3VideoTracker:
         """
         session_id = inference_state.get("session_id")
 
+
         request = {
             "type": "add_prompt",
             "session_id": session_id,
             "frame_index": frame_idx,
             "text": text_prompt,
+            # "bounding_boxes": bounding_boxes,
+            # "bounding_box_labels": bounding_box_labels,
         }
 
         if obj_id is not None:
@@ -186,7 +191,6 @@ class SAM3VideoTracker:
         outputs = response["outputs"]
 
         obj_ids = outputs['out_obj_ids'].tolist()
-        outputs_list = []
         for i, obj_id in enumerate(obj_ids):
             obj_info = {
                 'id': int(obj_id),
@@ -194,9 +198,65 @@ class SAM3VideoTracker:
                 'box_xywh': outputs['out_boxes_xywh'][i].tolist() if 'out_boxes_xywh' in outputs else None,
                 'mask': outputs['out_binary_masks'][i] if 'out_binary_masks' in outputs else None,
             }
-            outputs_list.append(obj_info)
 
-        return frame_idx, obj_ids, outputs_list
+
+        return frame_idx, obj_ids, outputs
+    
+
+
+
+
+    def add_new_mask_with_text_bounding_box(
+        self,
+        inference_state: Dict[str, Any],
+        frame_idx: int,
+        text_prompt: str,
+        obj_id: Optional[int] = None,
+        bounding_boxes: Optional[List[List[float]]] = None,
+        bounding_box_labels: Optional[List[int]] = None
+    ) -> Tuple[int, List[int], Dict]:
+        """
+        Add a new mask using text prompt at a specific frame.
+
+        Args:
+            inference_state: Inference state dictionary
+            frame_idx: Frame index to add mask
+            text_prompt: Text description of object
+            obj_id: Optional object ID (if not provided, SAM3 assigns one)
+
+        Returns:
+            Tuple of (frame_idx, obj_ids, outputs)
+        """
+        session_id = inference_state.get("session_id")
+
+
+        request = {
+            "type": "add_prompt",
+            "session_id": session_id,
+            "frame_index": frame_idx,
+            "text": text_prompt,
+            "bounding_boxes": bounding_boxes,
+            "bounding_box_labels": bounding_box_labels,
+        }
+
+        if obj_id is not None:
+            request["obj_id"] = obj_id
+
+        response = self.video_predictor.handle_request(request=request)
+        outputs = response["outputs"]
+
+        obj_ids = outputs['out_obj_ids'].tolist()
+        for i, obj_id in enumerate(obj_ids):
+            obj_info = {
+                'id': int(obj_id),
+                'prob': float(outputs['out_probs'][i]) if 'out_probs' in outputs else 1.0,
+                'box_xywh': outputs['out_boxes_xywh'][i].tolist() if 'out_boxes_xywh' in outputs else None,
+                'mask': outputs['out_binary_masks'][i] if 'out_binary_masks' in outputs else None,
+            }
+
+
+        return frame_idx, obj_ids, outputs
+
 
 
     def add_new_mask(

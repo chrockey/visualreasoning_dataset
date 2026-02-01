@@ -1,0 +1,21 @@
+# Gemini + SAM3 Tracker Pipeline Configuration for Bridge
+
+debug: true
+
+# Text prompts for initial object detection (fallback chain)
+text_prompt1: "Robot Arm"
+text_prompt2: "Black Object"
+
+output_dir: "output"
+
+# EMA smoothing for centroid trajectory
+ema_alpha: 0.9  # EMA smoothing factor (0 < alpha <= 1), higher = follows raw more closely
+
+# Gemini API configuration
+gemini:
+  api_key: ""
+  model_name: "gemini-3-pro-preview"
+
+sam3:
+  model_id: facebook/sam3
+  gpus_to_use: [0]  # null uses all available GPUs, or specify list like [0, 1]

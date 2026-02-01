@@ -1,13 +1,32 @@
-from typing import Dict, Any
+from __future__ import annotations
+
+from typing import Dict, Any, Optional, Tuple, List
+from pathlib import Path
+
 import numpy as np
 import cv2
+import json
+# DROID / ZED
+import h5py
+import pyzed.sl as sl
 
 
-def draw_sliding_trajectory(frame, uv_all, current_idx, window,
-                            line_color, point_color, point_radius=5, line_thickness=2):
+# ============================================================
+# Drawing utilities
+# ============================================================
+def draw_sliding_trajectory(
+    frame,
+    uv_all,
+    current_idx,
+    window,
+    line_color,
+    point_color,
+    point_radius=5,
+    line_thickness=2,
+):
     """
-    Draw trajectory with gradient effect from older (lighter) to current (darker/brighter).
-    The gradient uses the same color family as point_color.
+    Draw a sliding-window trajectory with a temporal fade effect.
+    Older segments are lighter, recent segments are darker.
     """
     start = max(0, current_idx - window + 1)
     num_points = current_idx - start + 1
@@ -20,30 +39,49 @@ def draw_sliding_trajectory(frame, uv_all, current_idx, window,
             continue
 
         if prev is not None:
-            # Calculate gradient: older segments are lighter (fade towards white)
-            # alpha ranges from 0.3 (oldest) to 1.0 (newest)
+            # English note: Alpha increases with time, making newer segments darker.
             alpha = 0.3 + 0.7 * (idx / max(1, num_points - 1))
-
-            # Blend point_color with white for gradient effect
-            # point_color is in BGR format (B, G, R)
             gradient_color = tuple(
                 int(point_color[i] * alpha + 255 * (1 - alpha)) for i in range(3)
             )
-
             cv2.line(frame, prev, uv, gradient_color, line_thickness)
+
         prev = uv
 
-    # Draw current point with black border
     if uv_all[current_idx] is not None:
-        # Black border (outer circle)
         cv2.circle(frame, uv_all[current_idx], point_radius + 2, (0, 0, 0), -1)
-        # Colored point (inner circle)
         cv2.circle(frame, uv_all[current_idx], point_radius, point_color, -1)
 
+# ============================================================
+# Save Json log per frame
+# ============================================================
 
+def save_frame_log(
+    log_dir: Path,
+    frame_idx: int,
+    uv: Optional[Tuple[int, int]],
+    fps: float,
+):
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    log = {
+        "frame_idx": frame_idx,
+        "timestamp_sec": frame_idx / fps,
+        "hand_uv": list(uv) if uv is not None else None,
+        "visible": uv is not None,
+    }
+
+    log_path = log_dir / f"frame_{frame_idx:06d}.json"
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(log, f, indent=2)
+
+
+# ============================================================
+# Common camera utilities
+# ============================================================
 def load_intrinsic_from_dict(intr_dict):
     """
-    Load intrinsic parameters from a dictionary (from metadata).
+    Load camera intrinsics from metadata dictionary.
     """
     fx = float(intr_dict["fx"])
     fy = float(intr_dict["fy"])
@@ -52,25 +90,118 @@ def load_intrinsic_from_dict(intr_dict):
     K = np.array([[fx, 0, cx],
                   [0, fy, cy],
                   [0,  0,  1]], dtype=np.float64)
-    return K, intr_dict
+    return K
 
 
 def load_extrinsic_sequence_from_list(extr_list):
     """
-    Load extrinsic sequence from a list of extrinsic dicts (from metadata).
-    Returns R_list, t_list where each R is (3,3) rotation matrix
-    and each t is (3,1) translation vector.
+    Load a sequence of extrinsics into rotation / translation lists.
     """
     R_list, t_list = [], []
-    for ext_data in extr_list:
-        # ext_data is already the extrinsic dict (unwrapped by dataset loader)
-        R = np.array(ext_data["rotation_matrix"], dtype=np.float64)
-        t = np.array(ext_data["translation_vector"], dtype=np.float64).reshape(3, 1)
-        R_list.append(R)
-        t_list.append(t)
+    for ext in extr_list:
+        R_list.append(np.array(ext["rotation_matrix"], dtype=np.float64))
+        t_list.append(np.array(ext["translation_vector"], dtype=np.float64).reshape(3, 1))
     return R_list, t_list
 
 
+# ============================================================
+# DROID-specific helpers
+# ============================================================
+def _load_pose_seq(h5_path: Path, key: str) -> np.ndarray:
+    """
+    Load pose sequence from trajectory.h5.
+    Pose format: [x, y, z, rx, ry, rz]
+    """
+    with h5py.File(str(h5_path), "r") as f:
+        if key not in f:
+            raise KeyError(f"[H5] key not found: {key}")
+        arr = np.array(f[key], dtype=np.float64)
+
+    if arr.ndim != 2 or arr.shape[1] != 6:
+        raise ValueError(f"[H5] Expected (T,6), got {arr.shape}")
+    return arr
+
+
+def _euler_xyz_to_R(rx, ry, rz) -> np.ndarray:
+    cx, sx = np.cos(rx), np.sin(rx)
+    cy, sy = np.cos(ry), np.sin(ry)
+    cz, sz = np.cos(rz), np.sin(rz)
+
+    Rx = np.array([[1, 0, 0],
+                   [0, cx, -sx],
+                   [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy],
+                   [0, 1, 0],
+                   [-sy, 0, cy]])
+    Rz = np.array([[cz, -sz, 0],
+                   [sz, cz, 0],
+                   [0, 0, 1]])
+    return Rz @ Ry @ Rx
+
+
+def _pose6_to_T(pose6, rot_mode: str) -> np.ndarray:
+    """
+    Convert a 6-DoF pose to SE(3) matrix.
+    """
+    if rot_mode != "euler_xyz":
+        raise ValueError("Only euler_xyz rotation is supported")
+
+    x, y, z, rx, ry, rz = pose6
+    T = np.eye(4)
+    T[:3, :3] = _euler_xyz_to_R(rx, ry, rz)
+    T[:3, 3] = [x, y, z]
+    return T
+
+
+def _world_to_cam(Pw, T_world_cam):
+    """
+    Transform a world point into camera coordinates.
+    """
+    R = T_world_cam[:3, :3]
+    t = T_world_cam[:3, 3]
+    return R.T @ (Pw - t)
+
+
+def _project_point(Pc, fx, fy, cx, cy, W, H) -> Optional[Tuple[int, int]]:
+    """
+    Project a 3D camera-frame point into image coordinates.
+    """
+    X, Y, Z = Pc
+    if Z <= 1e-6:
+        return None
+
+    u = cx + fx * (X / Z)
+    v = cy + fy * (Y / Z)
+
+    if 0 <= u < W and 0 <= v < H:
+        return int(u), int(v)
+    return None
+
+
+def _get_intrinsic_from_svo(svo_path: Path, eye: str) -> Tuple[float, float, float, float]:
+    """
+    Extract fx, fy, cx, cy from a ZED SVO file.
+    """
+    zed = sl.Camera()
+    init = sl.InitParameters()
+    init.set_from_svo_file(str(svo_path))
+    init.svo_real_time_mode = False
+
+    if zed.open(init) != sl.ERROR_CODE.SUCCESS:
+        raise RuntimeError(f"Failed to open SVO: {svo_path}")
+
+    cam_info = zed.get_camera_information()
+    calib = cam_info.camera_configuration.calibration_parameters
+    cam = calib.left_cam if eye == "left" else calib.right_cam
+
+    fx, fy, cx, cy = float(cam.fx), float(cam.fy), float(cam.cx), float(cam.cy)
+    zed.close()
+    return fx, fy, cx, cy
+
+
+# ============================================================
+# Projection entry point (hand-only version)
+# ============================================================
 def project_camera_trajectories_to_2d(
     metadata: Dict[str, Any],
     num_frames: int,
@@ -78,144 +209,115 @@ def project_camera_trajectories_to_2d(
     viz_height: int = 480,
 ):
     """
-    Project 3D camera trajectories to 2D pixel coordinates.
+    Project camera trajectories into 2D image space.
 
-    Args:
-        metadata: Metadata dict containing camera_params with:
-            - head_extrinsics: List of head camera extrinsics
-            - hand_left_extrinsics: List of left hand extrinsics
-            - hand_right_extrinsics: List of right hand extrinsics
-            - head_intrinsics: Head camera intrinsic parameters
-        num_frames: Number of frames to process
-        viz_width: Target visualization width in pixels
-        viz_height: Target visualization height in pixels
-
-    Returns:
-        Dictionary containing projected 2D trajectories:
-        {
-            "head_2d": (T, 2) array,       # Head camera trajectory in pixel coordinates
-            "left_hand_2d": (T, 2) array,  # Left hand trajectory in pixel coordinates
-            "right_hand_2d": (T, 2) array, # Right hand trajectory in pixel coordinates
-            "metadata": {
-                "num_frames": int,          # Number of frames
-                "video_width": int,         # Video width in pixels
-                "video_height": int,        # Video height in pixels
-                "format": str,              # "uv_coordinates"
-                "nan_meaning": str,         # "invisible" (out of bounds or behind camera)
-                "coordinate_system": str    # "image" (top-left origin, x-right, y-down)
-            }
-        }
-        Returns None if camera parameters are missing.
+    Output format:
+      - head_2d: (T,2)  (may be NaN if unused)
+      - hand_2d: (T,2)  single gripper / hand trajectory
     """
+
+    # --------------------------------------------------------
+    # DROID GT trace mode
+    # --------------------------------------------------------
+    if "droid_gt_trace" in metadata:
+        cfg = metadata["droid_gt_trace"]
+
+        traj_h5 = Path(cfg["traj_h5"])
+        svo_path = Path(cfg["svo_path"])
+        view_cam_id = cfg["view_cam_id"]
+        arm_cam_id = cfg["arm_cam_id"]
+        gripper_offset_id = cfg["gripper_offset_id"]
+        eye = cfg.get("eye", "left")
+        rot_mode = cfg.get("rot_mode", "euler_xyz")
+
+        fx, fy, cx, cy = _get_intrinsic_from_svo(svo_path, eye)
+
+        view_pose = _load_pose_seq(traj_h5, f"observation/camera_extrinsics/{view_cam_id}")
+        arm_pose = _load_pose_seq(traj_h5, f"observation/camera_extrinsics/{arm_cam_id}")
+        off_pose = _load_pose_seq(traj_h5, f"observation/camera_extrinsics/{gripper_offset_id}")
+
+        T = min(len(view_pose), len(arm_pose), len(off_pose), num_frames)
+
+        hand_uv: List[Optional[Tuple[int, int]]] = []
+
+        for i in range(T):
+            T_w_arm = _pose6_to_T(arm_pose[i], rot_mode)
+            T_arm_grip = _pose6_to_T(off_pose[i], rot_mode)
+            Pw_grip = (T_w_arm @ T_arm_grip)[:3, 3]
+
+            T_w_view = _pose6_to_T(view_pose[i], rot_mode)
+            Pc = _world_to_cam(Pw_grip, T_w_view)
+
+            hand_uv.append(_project_point(Pc, fx, fy, cx, cy, viz_width, viz_height))
+
+        hand_2d = np.full((T, 2), np.nan, dtype=np.float32)
+        for i, uv in enumerate(hand_uv):
+            if uv is not None:
+                hand_2d[i] = uv
+
+        return {
+            "head_2d": np.full_like(hand_2d, np.nan),
+            "hand_2d": hand_2d,
+            "metadata": {
+                "num_frames": T,
+                "video_width": viz_width,
+                "video_height": viz_height,
+                "format": "uv_coordinates",
+                "nan_meaning": "invisible",
+                "coordinate_system": "image",
+            },
+        }
+
+    # --------------------------------------------------------
+    # camera_params mode (single hand)
+    # --------------------------------------------------------
     camera_params = metadata.get("camera_params", {})
-
-    # Extract camera parameters from metadata
-    head_extrinsics = camera_params.get("head_extrinsics", [])
-    left_extrinsics = camera_params.get("hand_left_extrinsics", [])
-    right_extrinsics = camera_params.get("hand_right_extrinsics", [])
-    head_intrinsics = camera_params.get("head_intrinsics")
-
-    if not head_extrinsics or not left_extrinsics or not right_extrinsics:
-        print(f"[WARNING] Missing camera extrinsics, skipping camera trajectory video")
+    if not camera_params:
         return None
 
-    if head_intrinsics is None:
-        print(f"[WARNING] Missing head camera intrinsics, skipping camera trajectory video")
+    head_extr = camera_params.get("head_extrinsics", [])
+    hand_extr = camera_params.get("hand_extrinsics", [])
+    intr = camera_params.get("head_intrinsics")
+
+    if not head_extr or not hand_extr or intr is None:
         return None
 
-    # Load camera parameters
-    R_head, t_head = load_extrinsic_sequence_from_list(head_extrinsics)
-    R_left, t_left = load_extrinsic_sequence_from_list(left_extrinsics)
-    R_right, t_right = load_extrinsic_sequence_from_list(right_extrinsics)
-    K_head, _ = load_intrinsic_from_dict(head_intrinsics)
+    R_h, t_h = load_extrinsic_sequence_from_list(head_extr)
+    R_hand, t_hand = load_extrinsic_sequence_from_list(hand_extr)
+    K = load_intrinsic_from_dict(intr)
 
-    fx_h = K_head[0, 0]
-    fy_h = K_head[1, 1]
-    cx_h = K_head[0, 2]
-    cy_h = K_head[1, 2]
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
 
-    # Calculate trajectories in world coordinates
-    left_traj = np.stack([t_left[i].reshape(3) for i in range(len(R_left))], axis=0)
-    right_traj = np.stack([t_right[i].reshape(3) for i in range(len(R_right))], axis=0)
-    head_centers = np.stack([t_head[i].reshape(3) for i in range(len(R_head))], axis=0)
-
-    # Determine total length
-    T_data = max(len(R_left), len(R_right))
-    n_head = len(R_head)
-    T = min(n_head, T_data, num_frames)
-
-    # Slice to total length
-    left_traj = left_traj[:T]
-    right_traj = right_traj[:T]
-    head_centers = head_centers[:T]
-    R_head = R_head[:T]
-    t_head = t_head[:T]
-
-    traj_head_3d = head_centers
-    traj_left_3d = left_traj
-    traj_right_3d = right_traj
-
-    # Project trajectories to 2D head camera plane
-    def proj_to_head_cam(P_world, R_h, t_h):
-        if P_world is None:
-            return None
-        Pw = P_world.reshape(3)
-        th = t_h.reshape(3)
-        Pc = R_h.T @ (Pw - th)
-        X, Y, Z = Pc
-        if Z <= 1e-6:
-            return None
-        u = fx_h * (X / Z) + cx_h
-        v = fy_h * (Y / Z) + cy_h
-        if 0 <= u < viz_width and 0 <= v < viz_height:
-            return (int(u), int(v))
-        else:
-            return None
-
-    head_uv_2d = []
-    left_uv_2d = []
-    right_uv_2d = []
+    T = min(len(R_h), len(R_hand), num_frames)
+    hand_uv = []
 
     for i in range(T):
-        R_h = R_head[i]
-        t_h = t_head[i]
-        head_uv_2d.append(proj_to_head_cam(traj_head_3d[i], R_h, t_h))
-        left_uv_2d.append(proj_to_head_cam(traj_left_3d[i], R_h, t_h))
-        right_uv_2d.append(proj_to_head_cam(traj_right_3d[i], R_h, t_h))
+        Pw = t_hand[i].reshape(3)
+        Pc = R_h[i].T @ (Pw - t_h[i].reshape(3))
+        hand_uv.append(_project_point(Pc, fx, fy, cx, cy, viz_width, viz_height))
 
-    # Convert list of tuples/None to numpy arrays with NaN for None values
-    # Format: (T, 2) array where T is number of frames
-    # Values are (u, v) pixel coordinates in the output video frame
-    # None values (invisible/out-of-bounds points) are converted to NaN
-    def convert_to_array(uv_list):
-        """Convert list of (u,v) tuples or None to (T, 2) numpy array with NaN for None."""
-        arr = np.full((len(uv_list), 2), np.nan, dtype=np.float32)
-        for i, uv in enumerate(uv_list):
-            if uv is not None:
-                arr[i] = uv
-        return arr
+    hand_2d = np.full((T, 2), np.nan, dtype=np.float32)
+    for i, uv in enumerate(hand_uv):
+        if uv is not None:
+            hand_2d[i] = uv
 
-    # Prepare return data with projected 2D trajectories
-    trajectory_data = {
-        # Projected 2D trajectories (T, 2) in pixel coordinates
-        "head_2d": convert_to_array(head_uv_2d),      # Head camera trajectory (red point in video)
-        "left_hand_2d": convert_to_array(left_uv_2d),  # Left hand trajectory (green point in video)
-        "right_hand_2d": convert_to_array(right_uv_2d), # Right hand trajectory (blue point in video)
-
-        # Metadata for interpreting the trajectories
+    return {
+        "head_2d": np.full_like(hand_2d, np.nan),
+        "hand_2d": hand_2d,
         "metadata": {
-            "num_frames": T,                # Number of frames in trajectory
-            "video_width": viz_width,       # Output video width in pixels
-            "video_height": viz_height,     # Output video height in pixels
-            "format": "uv_coordinates",     # Coordinate format: (u, v) pixel coordinates
-            "nan_meaning": "invisible",     # NaN indicates point is invisible (out of bounds or behind camera)
-            "coordinate_system": "image",   # Coordinate system: top-left origin, x-right, y-down
-        }
+            "num_frames": T,
+            "video_width": viz_width,
+            "video_height": viz_height,
+            "format": "uv_coordinates",
+            "nan_meaning": "invisible",
+            "coordinate_system": "image",
+        },
     }
 
-    return trajectory_data
 
-
+# ============================================================
+# Video generation (hand-only visualization)
+# ============================================================
 def generate_trajectory_visualization_video(
     video_frames: np.ndarray,
     trajectory_data: Dict[str, Any],
@@ -226,30 +328,23 @@ def generate_trajectory_visualization_video(
     Generate visualization video from 2D trajectory data.
 
     Args:
-        video_frames: Full video frames (head camera), RGB format (T, H, W, 3)
+        video_frames: Full video frames (RGB) in shape (T, H, W, 3).
         trajectory_data: Dictionary containing projected 2D trajectories:
-            - "head_2d": (T, 2) array with head camera trajectory
-            - "left_hand_2d": (T, 2) array with left hand trajectory
-            - "right_hand_2d": (T, 2) array with right hand trajectory
+            - "hand_2d": (T, 2) array
             - "metadata": Dict with video_width, video_height, num_frames
         output_path: Output video file path
         trace_window: Number of frames to show in trajectory trace
     """
-    # Extract trajectory arrays
-    head_2d = trajectory_data["head_2d"]      # (T, 2) array
-    left_2d = trajectory_data["left_hand_2d"]  # (T, 2) array
-    right_2d = trajectory_data["right_hand_2d"] # (T, 2) array
+    hand_2d = trajectory_data["hand_2d"]
 
-    # Extract metadata
     meta = trajectory_data["metadata"]
-    viz_width = meta["video_width"]
-    viz_height = meta["video_height"]
-    T = meta["num_frames"]
+    viz_width = int(meta["video_width"])
+    viz_height = int(meta["video_height"])
+    T = int(meta["num_frames"])
 
-    # Convert numpy arrays back to list of tuples/None for drawing
-    def array_to_list(arr):
-        """Convert (T, 2) array to list of (u, v) tuples or None."""
-        uv_list = []
+    # Convert (T,2) array to list of (u,v) tuples or None
+    def array_to_list(arr: np.ndarray) -> List[Optional[Tuple[int, int]]]:
+        uv_list: List[Optional[Tuple[int, int]]] = []
         for i in range(len(arr)):
             if np.isnan(arr[i, 0]) or np.isnan(arr[i, 1]):
                 uv_list.append(None)
@@ -257,102 +352,119 @@ def generate_trajectory_visualization_video(
                 uv_list.append((int(arr[i, 0]), int(arr[i, 1])))
         return uv_list
 
-    head_uv_2d = array_to_list(head_2d)
-    left_uv_2d = array_to_list(left_2d)
-    right_uv_2d = array_to_list(right_2d)
+    hand_uv_2d = array_to_list(hand_2d)
 
-    # Create video writer
+    # English note: Prefer preserving the original FPS if available in metadata.
+    fps = float(meta.get("fps", 30.0)) if isinstance(meta, dict) else 30.0
+    if not np.isfinite(fps) or fps <= 1e-6:
+        fps = 30.0
+
+    out_p = Path(output_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(output_path, fourcc, 30, (viz_width, viz_height))
+    writer = cv2.VideoWriter(str(out_p), fourcc, fps, (viz_width, viz_height))
 
-    print(f"[INFO] Generating camera trajectory video: {output_path}")
+    print(f"[INFO] Generating trajectory video: {out_p}")
 
-    # Generate frames
     for i in range(T):
-        # Get video frame and convert RGB to BGR
         if i < len(video_frames):
             frame = video_frames[i].copy()
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            frame = cv2.resize(frame, (viz_width, viz_height))
+
+            # English note: Resize only when input frames differ from target size.
+            if frame.shape[1] != viz_width or frame.shape[0] != viz_height:
+                frame = cv2.resize(frame, (viz_width, viz_height))
+
+
+            uv = hand_uv_2d[i]
+
+            if output_path is not None:
+                save_frame_log(
+                    log_dir=out_p.parent / "trace_json",
+                    frame_idx=i,
+                    uv=uv,
+                    fps=fps,
+                )
         else:
             frame = np.ones((viz_height, viz_width, 3), np.uint8) * 255
 
-        # Draw trajectories
-        # Head trajectory (red point)
-        draw_sliding_trajectory(frame, head_uv_2d, i, trace_window,
-                                line_color=(0, 0, 0),
-                                point_color=(0, 0, 255),
-                                point_radius=8,
-                                line_thickness=4)
-        # Left hand trajectory (green point)
-        draw_sliding_trajectory(frame, left_uv_2d, i, trace_window,
-                                line_color=(255, 0, 255),
-                                point_color=(0, 255, 0),
-                                point_radius=8,
-                                line_thickness=4)
-        # Right hand trajectory (blue point)
-        draw_sliding_trajectory(frame, right_uv_2d, i, trace_window,
-                                line_color=(0, 0, 255),
-                                point_color=(255, 0, 0),
-                                point_radius=8,
-                                line_thickness=4)
+        # Draw hand trajectory (single track)
+        draw_sliding_trajectory(
+            frame,
+            hand_uv_2d,
+            i,
+            trace_window,
+            line_color=(0, 0, 0),
+            point_color=(0, 255, 0),  # green
+            point_radius=8,
+            line_thickness=4,
+        )
 
-        # Frame info
-        cv2.putText(frame, f"Frame {i+1}/{T}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        cv2.putText(
+            frame,
+            f"Frame {i+1}/{T}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 0, 0),
+            2,
+        )
 
         writer.write(frame)
 
     writer.release()
-    print(f"[INFO] Saved camera trajectory video: {output_path}")
+    print(f"[INFO] Saved trajectory video: {out_p}")
 
 
+# ============================================================
+# Convenience wrapper
+# ============================================================
 def generate_camera_trajectory_video(
     video_frames: np.ndarray,
     metadata: Dict[str, Any],
     output_path: str,
     trace_window: int = 60,
-    viz_width: int = 640,
-    viz_height: int = 480,
+    viz_width: Optional[int] = None,
+    viz_height: Optional[int] = None,
 ):
     """
-    Generate 2D camera trajectory visualization video (combines projection + video generation).
-
-    This is a convenience function that combines:
-    1. project_camera_trajectories_to_2d() - Projects 3D trajectories to 2D
-    2. generate_trajectory_visualization_video() - Generates video from 2D data
+    Generate 2D trajectory visualization video (projection + rendering).
 
     Args:
-        video_frames: Full video frames (head camera), RGB format (T, H, W, 3)
-        metadata: Metadata dict containing camera_params
+        video_frames: RGB frames (T, H, W, 3)
+        metadata: Metadata dict
         output_path: Output video path
-        trace_window: Number of frames to show in trajectory trace
-        viz_width: Output video width
-        viz_height: Output video height
+        trace_window: Sliding window length for visualization
+        viz_width: Output width (defaults to input frame width)
+        viz_height: Output height (defaults to input frame height)
 
     Returns:
-        Dictionary containing projected 2D trajectories (see project_camera_trajectories_to_2d)
-        Returns None if camera parameters are missing.
+        trajectory_data dict returned by project_camera_trajectories_to_2d()
     """
-    num_frames = len(video_frames)
+    if viz_width is None:
+        viz_width = int(video_frames.shape[2])
+    if viz_height is None:
+        viz_height = int(video_frames.shape[1])
 
-    # Step 1: Project 3D trajectories to 2D
     trajectory_data = project_camera_trajectories_to_2d(
         metadata=metadata,
-        num_frames=num_frames,
+        num_frames=len(video_frames),
         viz_width=viz_width,
         viz_height=viz_height,
     )
-
     if trajectory_data is None:
         return None
 
-    # Step 2: Generate visualization video from 2D trajectory data
+    # English note: Record FPS if available from caller-side metadata.
+    if "metadata" in trajectory_data and isinstance(trajectory_data["metadata"], dict):
+        if "fps" not in trajectory_data["metadata"] and "fps" in metadata:
+            trajectory_data["metadata"]["fps"] = metadata["fps"]
+
     generate_trajectory_visualization_video(
         video_frames=video_frames,
         trajectory_data=trajectory_data,
         output_path=output_path,
         trace_window=trace_window,
     )
-
     return trajectory_data

@@ -50,4 +50,5 @@ class BaseDataset:
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         video_name = self.video_names[idx]
+        print(f"Loading video: {video_name}")
         return self.get_video(video_name)

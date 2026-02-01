@@ -62,6 +62,7 @@ class CommonUtils:
             with open(file_path, "r") as file:
                 json_data = json.load(file)
                 for obj_id, obj_item in json_data["labels"].items():
+                
                     # box id
                     instance_id = obj_item["instance_id"]
                     if instance_id not in unique_ids: # not a valid box
@@ -191,8 +192,11 @@ class CommonUtils:
 
                 for obj_id_str, obj_item in json_data.get("labels", {}).items():
                     obj_id = int(obj_id_str)
-                    centroid_x = obj_item.get("centroid_x", None)
-                    centroid_y = obj_item.get("centroid_y", None)
+
+                    if obj_id != 1:
+                        continue  # Skip background
+                    centroid_x = obj_item.get("ema_centroid_x", None)
+                    centroid_y = obj_item.get("ema_centroid_y", None)
 
                     # Skip if centroid data is missing
                     if centroid_x is None or centroid_y is None:

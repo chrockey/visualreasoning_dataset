@@ -1,0 +1,15 @@
+# SAM3 Tracker Pipeline Configuration for Language Table
+
+debug: true
+
+# Text prompt for object detection
+text_prompt: "Gray object"
+
+output_dir: "output"
+
+# EMA smoothing for centroid trajectory
+ema_alpha: 0.9  # EMA smoothing factor (0 < alpha <= 1), higher = follows raw more closely
+
+sam3:
+  model_id: facebook/sam3
+  gpus_to_use: [0]  # null uses all available GPUs, or specify list like [0, 1]

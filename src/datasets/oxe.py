@@ -8,6 +8,10 @@ import tensorflow as tf
 
 from .base import BaseDataset
 
+try:
+    tf.config.set_visible_devices([], "GPU")
+except Exception as e:
+    print(f"[WARN] TF set_visible_devices([],'GPU') failed: {e}")
 
 class OXEDataset(BaseDataset):
     """Open X-Embodiment dataset loader for TFRecord format.
@@ -21,7 +25,7 @@ class OXEDataset(BaseDataset):
                     ...
                     dataset_info.json
                     features.json
-            dataset_name_2/
+            dataset_name_2/asu_table_top_converted_externally_to_rlds/0.1.0
                 ...
 
     Each episode contains timesteps with:
@@ -43,6 +47,7 @@ class OXEDataset(BaseDataset):
             Example: "asu_table_top_converted_externally_to_rlds/00000/0"
         """
         data_path = Path(self.data_dir)
+        print(f"[INFO] Scanning data directory: {data_path}")
         if not data_path.exists():
             return []
 
@@ -50,6 +55,7 @@ class OXEDataset(BaseDataset):
 
         # Find all dataset directories
         for dataset_dir in sorted(data_path.iterdir()):
+            print(f"[DEBUG] Checking dataset directory: {dataset_dir}")
             if not dataset_dir.is_dir():
                 continue
 
@@ -59,6 +65,7 @@ class OXEDataset(BaseDataset):
                 continue
 
             version_dir = version_dirs[0]  # Use first version found
+            print(f"[INFO] Loading dataset: {dataset_dir.name} (version: {version_dir.name})")
             dataset_info_path = version_dir / "dataset_info.json"
 
             if not dataset_info_path.exists():
@@ -137,25 +144,57 @@ class OXEDataset(BaseDataset):
 
         return episode_data
     
-    def _get_tfrecord_path(self, dataset_name, shard_idx,):
+    def _get_tfrecord_path(self, dataset_name, shard_idx):
+        """
+        Make TFRecord path robust:
+        1) Try dataset_info filepathTemplate (original behavior)
+        2) If not exists, fallback to common patterns / glob search in version_dir
+        3) Finally, pick shard_idx-th file if multiple exist
+        """
         dataset_info = self._dataset_cache[dataset_name]['info']
         version_dir = self._dataset_cache[dataset_name]['version_dir']
 
-        # Get split info
-        split_info = dataset_info['splits'][0]  # Assume first split (train)
-        shard_lengths = [int(length) for length in split_info['shardLengths']]
-        num_shards = len(shard_lengths)
+        # --------
+        # 1) Original: use dataset_info template
+        # --------
+        try:
+            split_info = dataset_info['splits'][0]  # Assume first split
+            shard_lengths = [int(length) for length in split_info.get('shardLengths', [])]
+            num_shards = len(shard_lengths) if len(shard_lengths) > 0 else None
 
-        # Construct TFRecord file path
-        file_template = split_info['filepathTemplate']
-        filename = file_template.format(
-            DATASET=dataset_name,
-            SPLIT=split_info['name'],
-            FILEFORMAT=dataset_info['fileFormat'],
-            SHARD_X_OF_Y=f"{shard_idx:05d}-of-{num_shards:05d}"
-        )
-        tfrecord_path = version_dir / filename
-        return tfrecord_path
+            file_template = split_info.get('filepathTemplate', None)
+            if file_template is not None and num_shards is not None:
+                filename = file_template.format(
+                    DATASET=dataset_name,
+                    SPLIT=split_info.get('name', 'train'),
+                    FILEFORMAT=dataset_info.get('fileFormat', 'tfrecord'),
+                    SHARD_X_OF_Y=f"{shard_idx:05d}-of-{num_shards:05d}"
+                )
+                tfrecord_path = version_dir / filename
+                if tfrecord_path.is_file():
+                    return tfrecord_path
+        except Exception:
+            pass
+
+        # --------
+        # 2) Fallback: glob search (handles "bridge_oxe.tfrecord-00000-of-01024" etc.)
+        # --------
+        # try split-included and split-not-included patterns
+        candidates = sorted(version_dir.glob(f"{dataset_name}*.tfrecord-*"))
+        if not candidates:
+            # also allow tfrecord without dash formatting (just in case)
+            candidates = sorted(version_dir.glob(f"{dataset_name}*.tfrecord*"))
+
+        if not candidates:
+            raise FileNotFoundError(
+                f"No TFRecord files found for dataset={dataset_name} under {version_dir}"
+            )
+
+        # If shard_idx is within available files, use it; otherwise clamp to last
+        if shard_idx < len(candidates):
+            return candidates[shard_idx]
+        return candidates[-1]
+
 
     def _parse_tfrecord_episode(self, tfrecord_path: Path, episode_offset: int) -> Dict[str, Any]:
         """Parse a specific episode from a TFRecord file.
@@ -186,84 +225,60 @@ class OXEDataset(BaseDataset):
         # Extract data from the parsed example
         return self._extract_episode_data(parsed)
 
+
     def _extract_episode_data(self, example: tf.train.Example) -> Dict[str, Any]:
-        """Extract structured data from parsed TFRecord example.
-
-        Args:
-            example: Parsed TFRecord example
-
-        Returns:
-            Dict with frames, description, and metadata
-        """
         features = example.features.feature
 
-        # The structure is: steps/field_name where each field contains all timesteps
-        # Extract images (each is a PNG/JPEG encoded byte string)
+        # -------------------------
+        # 1) Frames: language_table uses steps/observation/rgb
+        #    (fallback: steps/observation/image for other datasets)
+        # -------------------------
         frames = []
-        if 'steps/observation/image' in features:
-            image_bytes_list = features['steps/observation/image'].bytes_list.value
-            for image_bytes in image_bytes_list:
-                # Decode PNG/JPEG image
-                image = tf.image.decode_image(image_bytes, channels=3)
-                frames.append(image.numpy())
+        if "steps/observation/rgb" in features:
+            image_bytes_list = features["steps/observation/rgb"].bytes_list.value
+            for b in image_bytes_list:
+                img = tf.image.decode_image(b, channels=3)
+                frames.append(img.numpy())
+        elif "steps/observation/image" in features:
+            image_bytes_list = features["steps/observation/image"].bytes_list.value
+            for b in image_bytes_list:
+                img = tf.image.decode_image(b, channels=3)
+                frames.append(img.numpy())
 
-        # Extract states (flattened array of all timesteps)
-        states = []
-        if 'steps/observation/state' in features:
-            state_values = list(features['steps/observation/state'].float_list.value)
-            # Figure out state dimension from number of frames and total values
-            num_steps = len(frames)
-            if num_steps > 0 and len(state_values) > 0:
-                state_dim = len(state_values) // num_steps
-                # Reshape into (num_steps, state_dim)
-                states = np.array(state_values).reshape(num_steps, state_dim)
+        frames = np.asarray(frames, dtype=np.uint8) if len(frames) > 0 else np.array([], dtype=np.uint8)
 
-        # Extract actions (flattened array of all timesteps)
-        actions = []
-        if 'steps/action' in features:
-            action_values = list(features['steps/action'].float_list.value)
-            num_steps = len(frames)
-            if num_steps > 0 and len(action_values) > 0:
+        num_steps = len(frames)
+        # -------------------------
+        # 3) Action (language_table: steps/action shape [2])
+        # -------------------------
+        actions = np.array([], dtype=np.float32)
+        if "steps/action" in features and num_steps > 0:
+            action_values = list(features["steps/action"].float_list.value)
+            if len(action_values) > 0:
                 action_dim = len(action_values) // num_steps
-                # Reshape into (num_steps, action_dim)
-                actions = np.array(action_values).reshape(num_steps, action_dim)
+                actions = np.asarray(action_values, dtype=np.float32).reshape(num_steps, action_dim)
 
-        # Extract language instruction (first one, they're all the same)
-        language_instruction = ""
-        if 'steps/language_instruction' in features:
-            lang_bytes_list = features['steps/language_instruction'].bytes_list.value
-            if len(lang_bytes_list) > 0:
-                language_instruction = lang_bytes_list[0].decode('utf-8')
-
-        # Extract language embedding (flattened, should be 512-dim)
-        language_embedding = None
-        if 'steps/language_embedding' in features:
-            emb_values = list(features['steps/language_embedding'].float_list.value)
-            num_steps = len(frames)
-            if num_steps > 0 and len(emb_values) > 0:
-                emb_dim = len(emb_values) // num_steps
-                # Just take the first one since they're all the same
-                language_embedding = np.array(emb_values[:emb_dim])
-
-        # Convert lists to numpy arrays
-        frames = np.array(frames) if frames else np.array([])
-        states = np.array(states) if len(states) > 0 else np.array([])
-        actions = np.array(actions) if len(actions) > 0 else np.array([])
-
-        # Build metadata dict
+        # -------------------------
+        # 4) Minimal metadata (필요한 것만)
+        # -------------------------
         metadata = {}
-        if len(states) > 0:
-            metadata['state'] = states
-        if len(actions) > 0:
-            metadata['action'] = actions
-        if language_embedding is not None:
-            metadata['language_embedding'] = language_embedding
+        if actions.size > 0:
+            metadata["action"] = actions
+
+        # (옵션) language_table의 effector 2D 좌표들 같이 쓰고 싶으면 여기 추가 가능
+        # if "steps/observation/effector_translation" in features and num_steps > 0:
+        #     v = list(features["steps/observation/effector_translation"].float_list.value)
+        #     metadata["effector_translation"] = np.asarray(v, dtype=np.float32).reshape(num_steps, 2)
 
         return {
-            'frames': frames,
-            'descriptions': [(0, len(frames)-1, language_instruction)],
-            'metadata': metadata
+            "frames": frames,
+            "metadata": metadata,
         }
+
+
+
+
+
 
 
 if __name__ == "__main__":

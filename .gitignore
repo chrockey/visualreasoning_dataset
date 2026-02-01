@@ -27,4 +27,4 @@ output/
 
 # sample data
 vla-dataset-samples
-sam3/
+# sam3/ (tracking enabled)

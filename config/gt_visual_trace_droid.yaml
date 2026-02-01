@@ -1,0 +1,21 @@
+# GT Visual Trace Pipeline for DROID Dataset
+# Download the dataset by copying it from the Google Cloud Storage bucket
+# gsutil -m cp -r gs://gresearch/robotics/droid_raw <path_to_your_target_dir>
+# This pipeline requires the ZED SDK to be installed
+
+camera_trajectory:
+  trace_window: 60
+  output_dir: "./trace_output"
+
+droid_gt_trace:
+  base_dir: "./droid_dataset"
+
+  # All other camera IDs refer to third-person (external) viewpoint cameras
+  target_mp4_ids: ["22008760", "24400334"]
+
+  eye: "left"            # "left" or "right"
+  rot_mode: "euler_xyz"  # pose6 rotation mode used in trajectory.h5
+
+  # Camera ID "18026681" corresponds to the camera mounted on the gripper
+  arm_cam_id: "18026681_left"
+  gripper_offset_id: "18026681_left_gripper_offset"
