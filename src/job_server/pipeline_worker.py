@@ -10,13 +10,12 @@ Config structure:
             save_dir: /path/to/results
             stop_when_empty: true
         pipeline:
-            name: affordance_type1
+            name: gt_visual_trace_droid  # or sam3_tracker, gemini_sam3_tracker, etc.
 
     config/{pipeline_name}.yaml  - Pipeline-specific settings
-        molmo:
-            model_id: allenai/Molmo-7B-D-0924
-        sam2:
-            model_cfg: sam2_hiera_l.yaml
+        sam3:
+            model_id: facebook/sam3
+            gpus_to_use: [0]
 """
 
 import argparse
@@ -32,9 +31,12 @@ logger = logging.getLogger(__name__)
 
 # Registry of available pipelines
 PIPELINES = {
-    "affordance_type1": "src.pipelines.affordance_type1.AffordanceType1Pipeline",
-    "affordance_type2": "src.pipelines.affordance_type2.AffordanceType2Pipeline",
-    "visual_trace": "src.pipelines.visual_trace.VisualTracePipeline",
+    # GT Visual Trace pipelines (dataset-specific)
+    "gt_visual_trace_droid": "src.pipelines.gt_visual_trace.droid.GTVisualTraceDroidPipeline",
+    "gt_visual_trace_agibotworld": "src.pipelines.gt_visual_trace.agibotworld.GTVisualTraceAgiBotWorldPipeline",
+    # Visual Trace pipelines (dataset-agnostic)
+    "sam3_tracker": "src.pipelines.visual_trace.sam3_tracker.SAM3TrackerPipeline",
+    "gemini_sam3_tracker": "src.pipelines.visual_trace.gemini_sam3_tracker.GeminiSAM3TrackerPipeline",
 }
 
 
