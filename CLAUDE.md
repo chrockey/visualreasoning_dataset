@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Distributed pipeline system for visual reasoning dataset annotation using Molmo (VLM for point extraction) and SAM2 (segmentation).
+Distributed pipeline system for visual reasoning dataset annotation using SAM3 (tracking) and Gemini (refinement).
 
 ## Commands
 
@@ -27,15 +27,19 @@ The worker fetches experiment info to get the config file path, then loads pipel
 
 ### Test Datasets
 ```bash
-python -m src.datasets.egodex
 python -m src.datasets.oxe
+python -m src.datasets.agibotworld
 ```
 
 ### Test Individual Pipeline
 ```bash
-python -m src.pipelines.affordance_type1
-python -m src.pipelines.affordance_type2
-python -m src.pipelines.visual_trace
+# GT Visual Trace pipelines (dataset-specific)
+python -m src.pipelines.gt_visual_trace.droid
+python -m src.pipelines.gt_visual_trace.agibotworld
+
+# Visual Trace pipelines (dataset-agnostic, requires --config)
+python -m src.pipelines.visual_trace.sam3_tracker --config visual_trace_language_table --data-dir ./data --episode-index 0
+python -m src.pipelines.visual_trace.gemini_sam3_tracker --config visual_trace_bridge --data-dir ./data --episode-index 0
 ```
 
 ### Client CLI
@@ -55,22 +59,17 @@ All datasets extend `BaseDataset` and provide:
 - `description` (str): Natural language task description
 - `metadata` (dict): Dataset-specific annotations
 
-**EgoDex** (`egodex.py`): Egocentric hand manipulation videos
-- Format: `video_name = "{part}/{task}/{video_id}"` (e.g., `"part1/add_remove_lid/0"`)
-- Data: MP4 videos + HDF5 metadata (camera params, MANO hand poses, joint transforms)
-- Frames: (N, 1080, 1920, 3)
+**AgiBotWorld** (`agibotworld.py`): Bimanual manipulation dataset
+- Data: MP4 videos + JSON metadata (camera params)
+- Used by: GT Visual Trace pipeline
 
 **Open X-Embodiment** (`oxe.py`): Robot manipulation episodes from TFRecord shards
-- Format: `video_name = "{dataset}/{shard_id}/{episode_in_shard}"` (e.g., `"asu_table_top.../00000/0"`)
-- Data: TFRecord files with robot states, actions, language instructions, embeddings
-- Frames: (N, 224, 224, 3)
-- Metadata includes `tfrecord_info` dict for shard-based annotation tracking:
-  - `dataset_name`, `shard_idx`, `episode_in_shard`, `split`, `tfrecord_path`
-- Annotations should be saved by shard: group episodes by `{dataset}/{shard_id}` for input-annotation matching
+- Datasets: DROID, Language Table, Bridge
+- Data: TFRecord files with robot states, actions, language instructions
+- Used by: GT Visual Trace (DROID), SAM3 Tracker (Language Table), Gemini+SAM3 (Bridge)
 
 ### Models (`src/models/`)
-- **Molmo**: VLM wrapper that extracts (x, y) point coordinates from images via natural language queries. Uses `extract_points()` to parse model output into pixel coordinates.
-- **SAM2**: Segmentation model that takes images + point coordinates and produces masks. Supports three mask selection modes: `highest_score`, `smallest_mask`, `random`.
+- **SAM3VideoTracker**: Video object tracking and segmentation using SAM3. Supports text-based prompting and mask propagation across video frames.
 
 ### Pipelines (`src/pipelines/`)
 All pipelines extend `BasePipeline` and implement:

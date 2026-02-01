@@ -1,8 +1,8 @@
 # Visual Reasoning Annotation
 
-Pipeline system for visual reasoning dataset annotation using SAM3 Tracking, Gemini.
+Pipeline system for visual reasoning dataset annotation using SAM3 Tracking and Gemini.
 
-⚠️ Note: The SAM3 Git module has been modified for this project; please refer to the code included in this repository rather than the upstream implementation.
+> **Note:** The SAM3 Git module has been modified for this project; please refer to the code included in this repository rather than the upstream implementation.
 
 ## Installation
 
@@ -10,117 +10,90 @@ Pipeline system for visual reasoning dataset annotation using SAM3 Tracking, Gem
 ./install.sh
 ```
 
-## Supported Pipelines
+## Pipelines
 
-| Pipeline                    | Use Case                                   | Command                                             |
-|-----------------------------|--------------------------------------------|-----------------------------------------------------|
-| **GT Visual Trace Droid**    | With GT pose (3D→2D projection)             | `python -m src.pipelines.gt_visual_trace_droid`     |
-| **Visual Trace Language Table** | Without GT pose (SAM3 video tracking) | `python -m   src.pipelines.affordance_type_language_table` |
-| **Visual Trace Bridge**      | Without GT pose (SAM3 video tracking with Gemini) | `python -m src.pipelines.affordance_type_bridge`    |
+### 1. GT Visual Trace
+Uses ground-truth camera parameters to project 3D trajectories to 2D pixel coordinates.
 
+| Supported Dataset | Config | Command |
+|-------------------|--------|---------|
+| DROID | `gt_visual_trace_droid.yaml` | `python -m src.pipelines.gt_visual_trace.droid` |
+| AgiBotWorld | `gt_visual_trace_agibotworld.yaml` | `python -m src.pipelines.gt_visual_trace.agibotworld` |
 
+### 2. SAM3 Tracker
+Uses SAM3 video tracking without ground-truth pose. Dataset-agnostic.
 
-## Supported Datasets
+| Supported Dataset | Config | Command |
+|-------------------|--------|---------|
+| Language Table | `visual_trace_language_table.yaml` | `python -m src.pipelines.visual_trace.sam3_tracker --config visual_trace_language_table --data-dir ./data --episode-index 0` |
 
-| Dataset | Status | Additional Metadata |
-|---------|--------|---------------------|
-| **EgoDex** | ✅ | Camera parameters (intrinsics/extrinsics), joint transforms (70+ joints), confidence scores, MANO hand poses |
-| **Open X-Embodiment** | ✅ | Robot states (joint angles), actions, 512-dim language embeddings |
-| **AgiBotWorld** | ✅ | Camera parameters (intrinsics/extrinsics), additional views, actions, proprio_stats |
-| **HoloAssist** | ✅ | Hand poses (left/right), depth |
+### 3. Gemini + SAM3 Tracker
+Uses Gemini for gripper detection refinement + SAM3 video tracking. Dataset-agnostic.
 
-All datasets inherit from `BaseDataset` and provide:
-- `video_name`: Video identifier string (for tracking annotations)
-- `frames`: Video frames as (N, H, W, 3) numpy array
-- `description`: Task description string
-- `metadata`: Dataset-specific annotations and additional data
+| Supported Dataset | Config | Command |
+|-------------------|--------|---------|
+| Bridge | `visual_trace_bridge.yaml` | `python -m src.pipelines.visual_trace.gemini_sam3_tracker --config visual_trace_bridge --data-dir ./data --episode-index 0` |
 
 ## Dataset Structure
 
-### 1️⃣ Droid (GT-based Visual Trace)
+#### DROID
+```bash
+# Download
+gsutil -m cp -r gs://gresearch/robotics/droid_raw <path>
 ```
-# Download the DROID raw dataset (required)
-gsutil -m cp -r gs://gresearch/robotics/droid_raw <path_to_your_target_dir>
-
+```
 droid_dataset/
-└── date/                             # Recording date
+└── date/
     └── recordings/
         ├── MP4/
-        │   ├── 18026681.mp4          # Gripper-mounted camera
-        │   ├── 22008760.mp4          # External camera (viewpoint 1)
-        │   └── 24400334.mp4          # External camera (viewpoint 2)
-        ├── SVO/                      # ZED camera recordings (for intrinsics extraction)
-        │   ├── 18026681.svo
-        │   ├── 22008760.svo
-        │   └── 24400334.svo
-        └── trajectory.h5             # Camera extrinsic parameters (trajectory)
+        │   ├── 18026681.mp4      # Gripper-mounted camera
+        │   ├── 22008760.mp4      # External camera 1
+        │   └── 24400334.mp4      # External camera 2
+        ├── SVO/                  # ZED recordings (for intrinsics)
+        │   └── *.svo
+        └── trajectory.h5         # Camera extrinsics
 ```
-### 2️⃣ Language Table (SAM3, No GT Pose)
+
+#### AgiBotWorld
 ```
-language_table_dataset/
-├── language_table-train.tfrecord-00000-of-01024      # Sharded TFRecord file containing training episodes
+agibotworld_dataset/
+└── episode/
+    ├── head_camera.mp4
+    ├── hand_left_camera.mp4
+    ├── hand_right_camera.mp4
+    └── metadata.json             # Camera parameters
+```
+
+#### Language Table / Bridge (OXE TFRecord format)
+```
+dataset_folder/
+├── *.tfrecord-*-of-*
 ├── dataset_info.json
-├── dataset_statistics_*.json
-└── features.json                                     # Features(Observation , Action(2D Cartesian))
+└── features.json
 ```
-
-### 3️⃣ Bridge (SAM3 + Gemini, No GT Pose)
-```
-bridge_folder/
-├── bridge_oxe.tfrecord-00000-of-01024                # Sharded TFRecord file containing training episodes
-├── dataset_info.json
-├── dataset_statistics_*.json
-└── features.json                                     # Features(Observation, Action(3D translation + 3D rotation))
-```
-
-
-
-
-
 
 ## Project Structure
 
 ```
 src/
-├── datasets/            # Dataset loaders
-│   ├── base.py          # BaseDataset abstract class
-│   ├── agibotworld.py   # AgiBotWorld-Beta (Bimanual manipulation robot manipulation)
-│   ├── egodex.py        # EgoDex (egocentric hand manipulation)
-│   ├── holoassist.py    # HoloAssist (Egocentric human interaction)
-│   └── oxe.py           # Open X-Embodiment (robot manipulation)
-├── models/              # Model wrappers
-│   ├── molmo.py         # VLM for point extraction
-│   └── sam2.py          # Segmentation model    
-├── pipelines/           # <-- WORK HERE
+├── datasets/
 │   ├── base.py
-│   ├── affordance_type_bridge.py
-│   ├── affordance_type_language_table.py
-│   └── gt_visual_trace_droid.py
-└── job_server/          # Distributed job system
-    ├── server.py        # FastAPI REST server
-    ├── worker.py        # Base worker class
+│   ├── agibotworld.py
+│   └── oxe.py
+├── models/
+│   └── sam3_video_tracker.py
+├── pipelines/
+│   ├── base.py
+│   ├── gt_visual_trace/          # GT-based (dataset-specific)
+│   │   ├── droid.py
+│   │   └── agibotworld.py
+│   └── visual_trace/             # SAM3-based (dataset-agnostic)
+│       ├── sam3_tracker.py
+│       └── gemini_sam3_tracker.py
+├── utils/
+│   └── gt_visual_trace.py
+└── job_server/
+    ├── server.py
     ├── pipeline_worker.py
-    └── client.py        # CLI client
+    └── client.py
 ```
-
-## Testing Pipelines
-
-```bash
-python -m src.pipelines.affordance_type_language_table
-python -m src.pipelines.affordance_type_bridge
-```
-<details open>
-<summary>Visualize GT robot gripper trajectories</summary>
-
-- MP4 files are saved under viz_video/*
-- Runnable datasets
-    - [ ] AgiBotWorld
-    - [ ] EgoDex
-    - [ ] HoloAssist
-    - [x] Open X-Embodiment
-</details>
-
-```bash
-python -m src.pipelines.gt_visual_trace_droid
-``` 
-
